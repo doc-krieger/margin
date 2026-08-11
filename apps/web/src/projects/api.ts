@@ -1,4 +1,11 @@
-import type { CommentRecord, CommentScope, CommentState } from "@margin/shared";
+import type {
+  CommentRecord,
+  CommentScope,
+  CommentState,
+  PiProfileManifest,
+  RevisionRunRecord,
+  RunEventType,
+} from "@margin/shared";
 
 export interface ProjectRoot {
   path: string;
@@ -81,6 +88,44 @@ export interface RunGuidanceRequest {
 
 export type CommentActor = "user" | "automation";
 
+export interface PiProfileView {
+  id: string;
+  label?: string;
+  status: "available" | "unavailable";
+  manifest: PiProfileManifest;
+  version?: string;
+  message?: string;
+  diagnostics?: string;
+}
+
+export interface StartRunRequest {
+  profileId: string;
+  selectedCommentIds: string[];
+  guidance?: string;
+}
+
+export interface RunEventEnvelope {
+  runId: string;
+  sequence: number;
+  timestamp: string;
+  type: RunEventType;
+  payload: Record<string, unknown>;
+}
+
+export interface RunEventHandlers {
+  onEvent: (event: RunEventEnvelope) => void;
+  onError?: (error: Error) => void;
+  onReconnect?: () => void;
+  onTerminal?: () => void;
+}
+
+export interface EventSourceLike {
+  readyState?: number;
+  onerror: ((event: Event) => void) | null;
+  addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void;
+  close(): void;
+}
+
 export class ProjectApiError extends Error {
   constructor(
     public readonly code: string,
@@ -96,17 +141,20 @@ export class ProjectApiError extends Error {
 export interface ProjectApiClientOptions {
   baseUrl?: string;
   fetcher?: typeof fetch;
+  eventSourceFactory?: (url: string) => EventSourceLike;
 }
 
 export class ProjectApiClient {
   private readonly baseUrl: string;
   private readonly fetcher: typeof fetch;
+  private readonly eventSourceFactory: (url: string) => EventSourceLike;
 
   constructor(options: ProjectApiClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "/api").replace(/\/$/, "");
     // Browsers require fetch to be invoked with Window as its receiver; keep the
     // injectable fetcher path unchanged for tests and non-browser consumers.
     this.fetcher = options.fetcher ?? fetch.bind(globalThis);
+    this.eventSourceFactory = options.eventSourceFactory ?? ((url) => new EventSource(url));
   }
 
   async listRoots(): Promise<ProjectRoot[]> {
@@ -198,6 +246,92 @@ export class ProjectApiClient {
       body: { state, actor },
     });
     return response.comment;
+  }
+
+  async listPiProfiles(): Promise<PiProfileView[]> {
+    const response = await this.request<{ profiles: PiProfileView[] }>("/pi/profiles");
+    return response.profiles;
+  }
+
+  async listRuns(projectId: string): Promise<RevisionRunRecord[]> {
+    const response = await this.request<{ runs: RevisionRunRecord[] }>(`/projects/${encodeURIComponent(projectId)}/runs`);
+    return response.runs;
+  }
+
+  async startRun(projectId: string, input: StartRunRequest): Promise<{ runId: string; run: RevisionRunRecord }> {
+    return this.request<{ runId: string; run: RevisionRunRecord }>(`/projects/${encodeURIComponent(projectId)}/runs`, {
+      method: "POST",
+      body: input,
+    });
+  }
+
+  async getRun(runId: string): Promise<RevisionRunRecord> {
+    const response = await this.request<{ run: RevisionRunRecord }>(`/runs/${encodeURIComponent(runId)}`);
+    return response.run;
+  }
+
+  async cancelRun(runId: string): Promise<RevisionRunRecord> {
+    const response = await this.request<{ run: RevisionRunRecord }>(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", body: {} });
+    return response.run;
+  }
+
+  /**
+   * Subscribe to replayable run events. The last sequence is sent on reconnect
+   * so a dropped browser connection cannot silently skip lifecycle evidence.
+   */
+  subscribeRunEvents(runId: string, handlers: RunEventHandlers): () => void {
+    const eventTypes: RunEventType[] = ["run.started", "pi.event", "pi.stderr", "pi.invalid", "diagnostic", "run.completed", "run.failed", "run.cancelled"];
+    let lastSequence = -1;
+    let source: EventSourceLike | undefined;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let closed = false;
+    let reconnectAttempt = 0;
+
+    const isTerminal = (type: RunEventType): boolean => type === "run.completed" || type === "run.failed" || type === "run.cancelled";
+    const closeSource = () => {
+      source?.close();
+      source = undefined;
+    };
+    const connect = () => {
+      if (closed) return;
+      const after = lastSequence >= 0 ? `?after=${lastSequence}` : "?after=-1";
+      source = this.eventSourceFactory(`${this.baseUrl}/runs/${encodeURIComponent(runId)}/events${after}`);
+      const handleMessage = (message: MessageEvent<string>) => {
+        try {
+          const parsed = JSON.parse(message.data) as { timestamp?: unknown; payload?: unknown };
+          const sequence = Number(message.lastEventId);
+          if (!Number.isInteger(sequence) || sequence < 0 || !parsed.timestamp || !parsed.payload || typeof parsed.payload !== "object" || Array.isArray(parsed.payload)) return;
+          const eventType = message.type as RunEventType;
+          lastSequence = Math.max(lastSequence, sequence);
+          reconnectAttempt = 0;
+          const event: RunEventEnvelope = { runId, sequence, timestamp: String(parsed.timestamp), type: eventType, payload: parsed.payload as Record<string, unknown> };
+          handlers.onEvent(event);
+          if (isTerminal(eventType)) {
+            handlers.onTerminal?.();
+            closeSource();
+            if (reconnectTimer) clearTimeout(reconnectTimer);
+          }
+        } catch (error) {
+          handlers.onError?.(error instanceof Error ? error : new Error("Malformed run event received"));
+        }
+      };
+      for (const eventType of eventTypes) source.addEventListener(eventType, handleMessage);
+      source.onerror = () => {
+        if (closed) return;
+        closeSource();
+        handlers.onReconnect?.();
+        const delay = Math.min(2_000, 250 * 2 ** reconnectAttempt);
+        reconnectAttempt += 1;
+        reconnectTimer = setTimeout(connect, delay);
+      };
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      closeSource();
+    };
   }
 
   private async request<T>(relativePath: string, options: { method?: string; body?: unknown } = {}): Promise<T> {

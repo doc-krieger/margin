@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { isSourceMarkdownEditor, openMarkdown } from "../editor/markdown-editor";
 import { CommentPane, type TextSelection } from "../comments/comment-pane";
+import { RunControlPanel } from "../runs";
 import {
   defaultProjectApiClient,
   ProjectApiError,
@@ -161,6 +162,7 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient }:
         <p className="workspace__status" aria-live="polite">{status}</p>
       </section>
       {snapshot && <CommentPane projectId={project.id} documentPath={snapshot.path} documentText={draft} selection={selection} refreshKey={snapshot.hash} focusSelectionRequest={commentScopeRequest} client={client} />}
+      <RunControlPanel projectId={project.id} client={client} resumeLatest />
     </section>
   );
 }
