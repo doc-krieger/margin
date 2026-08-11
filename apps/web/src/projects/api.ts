@@ -1,3 +1,5 @@
+import type { CommentRecord, CommentScope, CommentState } from "@margin/shared";
+
 export interface ProjectRoot {
   path: string;
   registeredAt: string;
@@ -50,6 +52,34 @@ export interface DocumentSnapshot {
 export interface ProjectApiErrorPayload {
   error?: { code?: string; message?: string; details?: Record<string, unknown> };
 }
+
+export interface CommentListFilter {
+  documentPath?: string;
+  runId?: string;
+  scope?: CommentScope;
+  state?: CommentState;
+}
+
+export interface SelectionCommentRequest {
+  documentPath: string;
+  documentText: string;
+  start: number;
+  end: number;
+  body: string;
+}
+
+export interface DocumentCommentRequest {
+  documentPath: string;
+  body: string;
+}
+
+export interface RunGuidanceRequest {
+  runId: string;
+  body: string;
+  documentPath?: string;
+}
+
+export type CommentActor = "user" | "automation";
 
 export class ProjectApiError extends Error {
   constructor(
@@ -115,6 +145,57 @@ export class ProjectApiClient {
       method: "PUT",
       body: { path: documentPath, content, baseHash },
     });
+  }
+
+  async listComments(projectId: string, filter: CommentListFilter = {}): Promise<CommentRecord[]> {
+    const params = new URLSearchParams();
+    if (filter.documentPath !== undefined) params.set("documentPath", filter.documentPath);
+    if (filter.runId !== undefined) params.set("runId", filter.runId);
+    if (filter.scope !== undefined) params.set("scope", filter.scope);
+    if (filter.state !== undefined) params.set("state", filter.state);
+    const query = params.toString();
+    const response = await this.request<{ comments: CommentRecord[] }>(`/projects/${encodeURIComponent(projectId)}/comments${query ? `?${query}` : ""}`);
+    return response.comments;
+  }
+
+  async createSelectionComment(projectId: string, input: SelectionCommentRequest): Promise<CommentRecord> {
+    const response = await this.request<{ comment: CommentRecord }>(`/projects/${encodeURIComponent(projectId)}/comments`, {
+      method: "POST",
+      body: { ...input, scope: "selection" },
+    });
+    return response.comment;
+  }
+
+  async createDocumentComment(projectId: string, input: DocumentCommentRequest): Promise<CommentRecord> {
+    const response = await this.request<{ comment: CommentRecord }>(`/projects/${encodeURIComponent(projectId)}/comments`, {
+      method: "POST",
+      body: { ...input, scope: "document" },
+    });
+    return response.comment;
+  }
+
+  async createRunGuidance(projectId: string, input: RunGuidanceRequest): Promise<CommentRecord> {
+    const response = await this.request<{ comment: CommentRecord }>(`/projects/${encodeURIComponent(projectId)}/comments`, {
+      method: "POST",
+      body: { ...input, scope: "run" },
+    });
+    return response.comment;
+  }
+
+  async updateComment(projectId: string, commentId: string, body: string): Promise<CommentRecord> {
+    const response = await this.request<{ comment: CommentRecord }>(`/projects/${encodeURIComponent(projectId)}/comments/${encodeURIComponent(commentId)}`, {
+      method: "PATCH",
+      body: { body },
+    });
+    return response.comment;
+  }
+
+  async transitionComment(projectId: string, commentId: string, state: CommentState, actor: CommentActor = "user"): Promise<CommentRecord> {
+    const response = await this.request<{ comment: CommentRecord }>(`/projects/${encodeURIComponent(projectId)}/comments/${encodeURIComponent(commentId)}/state`, {
+      method: "POST",
+      body: { state, actor },
+    });
+    return response.comment;
   }
 
   private async request<T>(relativePath: string, options: { method?: string; body?: unknown } = {}): Promise<T> {

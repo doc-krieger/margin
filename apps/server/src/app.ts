@@ -6,10 +6,12 @@ import { healthResponseSchema } from "../../../packages/shared/src/index.js";
 import { ProjectLifecycleError, ProjectLifecycleService } from "./projects/service.js";
 import { registerProjectRoutes } from "./projects/routes.js";
 import { DocumentError, DocumentService, registerDocumentRoutes } from "./documents/index.js";
+import { CommentAuthorizationError, CommentNotFoundError, CommentService, InvalidCommentTransitionError, registerCommentRoutes } from "./comments/index.js";
 
 export interface BuildAppOptions {
   projectService?: ProjectLifecycleService;
   documentService?: DocumentService;
+  commentService?: CommentService;
 }
 
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
@@ -21,6 +23,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   registerProjectRoutes(app, projectService);
   const documentService = options.documentService ?? new DocumentService(projectService);
   registerDocumentRoutes(app, documentService);
+  const commentService = options.commentService ?? new CommentService();
+  registerCommentRoutes(app, commentService, documentService);
   app.setErrorHandler((error: FastifyError, request, reply) => {
     request.log.error({ err: error, correlationId: request.id }, "request failed");
     if (error instanceof DocumentError) {
@@ -37,7 +41,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         : error.code === "GIT_INITIALIZATION_FAILED" ? 502 : 400;
       return reply.status(status).send({ error: { code: error.code, message: error.message, details: error.details, correlationId: request.id } });
     }
-    const status = error.validation ? 400 : (error.statusCode && error.statusCode >= 400 ? error.statusCode : 500);
+    if (error instanceof CommentAuthorizationError) {
+      return reply.status(403).send({ error: { code: "COMMENT_RESOLUTION_UNAUTHORIZED", message: error.message, correlationId: request.id } });
+    }
+    if (error instanceof CommentNotFoundError) {
+      return reply.status(404).send({ error: { code: "COMMENT_NOT_FOUND", message: error.message, correlationId: request.id } });
+    }
+    if (error instanceof InvalidCommentTransitionError) {
+      return reply.status(409).send({ error: { code: "COMMENT_INVALID_STATE_TRANSITION", message: error.message, details: { from: error.from, to: error.to }, correlationId: request.id } });
+    }
+    const status = error.validation || error instanceof TypeError || error instanceof RangeError ? 400 : (error.statusCode && error.statusCode >= 400 ? error.statusCode : 500);
     return reply.status(status).send({ error: { code: error.validation ? "INVALID_REQUEST" : "INTERNAL_ERROR", message: status === 500 ? "Internal server error" : error.message, correlationId: request.id } });
   });
   return app;

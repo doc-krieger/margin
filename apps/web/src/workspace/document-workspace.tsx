@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { isSourceMarkdownEditor, openMarkdown } from "../editor/markdown-editor";
+import { CommentPane, type TextSelection } from "../comments/comment-pane";
 import {
   defaultProjectApiClient,
   ProjectApiError,
@@ -21,6 +22,8 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient }:
   const [selectedPath, setSelectedPath] = useState<string>();
   const [snapshot, setSnapshot] = useState<DocumentSnapshot>();
   const [draft, setDraft] = useState("");
+  const [selection, setSelection] = useState<TextSelection>();
+  const [commentScopeRequest, setCommentScopeRequest] = useState(0);
   const [modeOverride, setModeOverride] = useState<"visual" | "source">();
   const [conflict, setConflict] = useState<{ currentHash?: string; message: string }>();
   const [status, setStatus] = useState("Loading documents…");
@@ -31,6 +34,7 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient }:
     setDocuments(undefined);
     setSelectedPath(undefined);
     setSnapshot(undefined);
+    setSelection(undefined);
     setConflict(undefined);
     setError(undefined);
     setStatus("Loading documents…");
@@ -53,12 +57,14 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient }:
     let cancelled = false;
     setStatus("Reading document…");
     setSnapshot(undefined);
+    setSelection(undefined);
     setConflict(undefined);
     setModeOverride(undefined);
     client.readDocument(project.id, selectedPath).then((result) => {
       if (cancelled) return;
       setSnapshot(result);
       setDraft(result.content);
+      setSelection(undefined);
       setStatus("Ready");
     }).catch((reason: unknown) => {
       if (cancelled) return;
@@ -101,6 +107,7 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient }:
       const result = await client.readDocument(project.id, selectedPath);
       setSnapshot(result);
       setDraft(result.content);
+      setSelection(undefined);
       setConflict(undefined);
       setStatus("Reloaded external changes");
     } catch (reason) {
@@ -129,6 +136,7 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient }:
           <div><span className="eyebrow">{selectedPath ?? "No selection"}</span><div data-testid="dirty-state" className={dirty ? "dirty" : "clean"}>{dirty ? "Unsaved changes" : "Saved"}</div></div>
           <div className="workspace__actions">
             {editor && <><button type="button" disabled={detectedMode === "source"} aria-pressed={mode === "visual"} onClick={() => setModeOverride("visual")}>Visual</button><button type="button" aria-pressed={mode === "source"} onClick={() => setModeOverride("source")}>Source</button></>}
+            <button type="button" data-testid="selection-comment-affordance" disabled={!selection} onClick={() => setCommentScopeRequest((request) => request + 1)}>Comment selection</button>
             <button type="button" disabled={!dirty || Boolean(conflict)} onClick={save}>Save</button>
           </div>
         </div>
@@ -137,10 +145,18 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient }:
         {snapshot && editor ? <>
           <div className="workspace__mode" data-testid="editor-mode">{mode === "source" ? "Source fallback" : "Visual editor"}{isSourceMarkdownEditor(editor) && " · unsupported syntax preserved"}</div>
           {mode === "visual" && <div className="workspace__preview" aria-label="Visual preview">{renderPreview(draft)}</div>}
-          <textarea aria-label={mode === "source" ? "Source Markdown editor" : "Visual Markdown editor"} data-testid={mode === "source" ? "source-editor" : "visual-editor"} value={draft} onChange={(event) => setDraft(event.target.value)} spellCheck={false} />
+          <textarea aria-label={mode === "source" ? "Source Markdown editor" : "Visual Markdown editor"} data-testid={mode === "source" ? "source-editor" : "visual-editor"} value={draft} onChange={(event) => setDraft(event.target.value)} onSelect={(event) => {
+            const target = event.currentTarget;
+            if (target.selectionStart === target.selectionEnd) {
+              setSelection(undefined);
+            } else {
+              setSelection({ start: target.selectionStart, end: target.selectionEnd, quote: target.value.slice(target.selectionStart, target.selectionEnd) });
+            }
+          }} spellCheck={false} />
         </> : <p className="workspace__status" data-testid="workspace-status">{status}</p>}
         <p className="workspace__status" aria-live="polite">{status}</p>
       </section>
+      {snapshot && <CommentPane projectId={project.id} documentPath={snapshot.path} documentText={draft} selection={selection} refreshKey={snapshot.hash} focusSelectionRequest={commentScopeRequest} client={client} />}
     </section>
   );
 }
