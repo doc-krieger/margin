@@ -5,9 +5,11 @@ import { randomUUID } from "node:crypto";
 import { healthResponseSchema } from "../../../packages/shared/src/index.js";
 import { ProjectLifecycleError, ProjectLifecycleService } from "./projects/service.js";
 import { registerProjectRoutes } from "./projects/routes.js";
+import { DocumentError, DocumentService, registerDocumentRoutes } from "./documents/index.js";
 
 export interface BuildAppOptions {
   projectService?: ProjectLifecycleService;
+  documentService?: DocumentService;
 }
 
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
@@ -17,8 +19,17 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.register(sensible);
   app.get("/health", async (request, reply) => reply.header("x-correlation-id", request.id).send(healthResponseSchema.parse({ ok: true, service: "margin-api", correlationId: request.id })));
   registerProjectRoutes(app, projectService);
+  const documentService = options.documentService ?? new DocumentService(projectService);
+  registerDocumentRoutes(app, documentService);
   app.setErrorHandler((error: FastifyError, request, reply) => {
     request.log.error({ err: error, correlationId: request.id }, "request failed");
+    if (error instanceof DocumentError) {
+      const status = error.code === "DOCUMENT_PROJECT_NOT_FOUND" || error.code === "DOCUMENT_NOT_FOUND" ? 404
+        : error.code === "DOCUMENT_CONFLICT" ? 409
+        : error.code === "DOCUMENT_NOT_FILE" || error.code === "DOCUMENT_NOT_TEXT" ? 422
+        : error.code === "DOCUMENT_PATH_INVALID" ? 403 : 400;
+      return reply.status(status).send({ error: { code: error.code, message: error.message, details: error.details, correlationId: request.id } });
+    }
     if (error instanceof ProjectLifecycleError) {
       const status = error.code === "PROJECT_PATH_OUTSIDE_REGISTERED_ROOT" ? 403
         : ["PROJECT_NOT_FOUND", "PROJECT_NOT_DIRECTORY"].includes(error.code) ? 404

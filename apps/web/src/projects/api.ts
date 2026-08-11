@@ -19,6 +19,34 @@ export interface ProjectResult {
   project: ProjectView;
 }
 
+export interface DocumentEntry {
+  path: string;
+  name: string;
+  kind: "file";
+  extension: string;
+  sizeBytes: number;
+}
+
+export interface DocumentTreeNode {
+  path: string;
+  name: string;
+  kind: "directory" | "file";
+  children?: DocumentTreeNode[];
+}
+
+export interface DocumentList {
+  documents: DocumentEntry[];
+  tree: DocumentTreeNode[];
+}
+
+export interface DocumentSnapshot {
+  path: string;
+  content: string;
+  hash: string;
+  sizeBytes: number;
+  modifiedAt: string;
+}
+
 export interface ProjectApiErrorPayload {
   error?: { code?: string; message?: string; details?: Record<string, unknown> };
 }
@@ -74,6 +102,21 @@ export class ProjectApiClient {
     return response.project;
   }
 
+  async listDocuments(projectId: string): Promise<DocumentList> {
+    return this.request<DocumentList>(`/projects/${encodeURIComponent(projectId)}/documents`);
+  }
+
+  async readDocument(projectId: string, documentPath: string): Promise<DocumentSnapshot> {
+    return this.request<DocumentSnapshot>(`/projects/${encodeURIComponent(projectId)}/documents/${encodeDocumentPath(documentPath)}`);
+  }
+
+  async saveDocument(projectId: string, documentPath: string, content: string, baseHash: string): Promise<DocumentSnapshot> {
+    return this.request<DocumentSnapshot>(`/projects/${encodeURIComponent(projectId)}/documents/${encodeDocumentPath(documentPath)}`, {
+      method: "PUT",
+      body: { path: documentPath, content, baseHash },
+    });
+  }
+
   private async request<T>(relativePath: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
     const response = await this.fetcher(`${this.baseUrl}${relativePath}`, {
       method: options.method ?? "GET",
@@ -87,6 +130,10 @@ export class ProjectApiClient {
     }
     return payload as T;
   }
+}
+
+function encodeDocumentPath(documentPath: string): string {
+  return documentPath.split("/").map((part) => encodeURIComponent(part)).join("/");
 }
 
 export const defaultProjectApiClient = new ProjectApiClient();
