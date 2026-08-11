@@ -8,5 +8,6 @@ export default defineConfig({
   plugins: [react()],
   root: "apps/web",
   resolve: { alias: { "@margin/shared": sharedSource } },
+  server: { proxy: { "/api": "http://127.0.0.1:3000" } },
   build: { outDir: "../../dist/web", emptyOutDir: true },
 });

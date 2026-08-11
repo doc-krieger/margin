@@ -40,6 +40,7 @@ export function CommentPane({ projectId, documentPath, documentText, selection, 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [status, setStatus] = useState("Loading comments…");
+  const bodyInputRef = useRef<HTMLTextAreaElement | null>(null);
   const itemRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   async function loadComments(): Promise<CommentRecord[]> {
@@ -50,8 +51,24 @@ export function CommentPane({ projectId, documentPath, documentText, selection, 
     return next;
   }
 
+  async function refreshComments(): Promise<void> {
+    setBusy(true);
+    setError(undefined);
+    setStatus("Refreshing comments…");
+    try {
+      await loadComments();
+    } catch (reason) {
+      setError(messageFor(reason));
+      setStatus("Comments unavailable");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
-    if (focusSelectionRequest) setScope("selection");
+    if (!focusSelectionRequest) return;
+    setScope("selection");
+    bodyInputRef.current?.focus();
   }, [focusSelectionRequest]);
 
   useEffect(() => {
@@ -61,6 +78,7 @@ export function CommentPane({ projectId, documentPath, documentText, selection, 
     client.listComments(projectId).then((next) => {
       if (cancelled) return;
       setComments(next);
+      if (selectedId && !next.some((comment) => comment.id === selectedId)) setSelectedId(undefined);
       setStatus(next.length ? `${next.length} comment${next.length === 1 ? "" : "s"} loaded` : "No comments yet");
     }).catch((reason: unknown) => {
       if (cancelled) return;
@@ -79,6 +97,10 @@ export function CommentPane({ projectId, documentPath, documentText, selection, 
     if (filter === "orphaned") return comment.anchorStatus === "orphaned";
     return true;
   }), [comments, documentPath, filter]);
+
+  useEffect(() => {
+    if (selectedId && !visibleComments.some((comment) => comment.id === selectedId)) setSelectedId(undefined);
+  }, [selectedId, visibleComments]);
 
   async function submitComment(): Promise<void> {
     const trimmed = body.trim();
@@ -175,20 +197,23 @@ export function CommentPane({ projectId, documentPath, documentText, selection, 
     <aside className="comment-pane" aria-label="Comment review" data-testid="comment-pane">
       <div className="comment-pane__heading">
         <div><span className="eyebrow">Review layer</span><h2>Comments</h2></div>
-        <span className="comment-pane__count" aria-label={`${visibleComments.length} visible comments`}>{visibleComments.length}</span>
+        <div className="comment-pane__heading-actions">
+          <span className="comment-pane__count" aria-label={`${visibleComments.length} visible comments`}>{visibleComments.length}</span>
+          <button type="button" data-testid="refresh-comments" aria-label="Refresh comments" onClick={refreshComments} disabled={busy}>Refresh</button>
+        </div>
       </div>
       <p className="comment-pane__description">Feedback is stored beside the file. It never becomes Markdown text.</p>
 
       <section className="comment-composer" aria-labelledby="comment-composer-title">
         <h3 id="comment-composer-title">Add feedback</h3>
         <div className="comment-composer__scopes" role="group" aria-label="Comment scope">
-          <button type="button" data-testid="comment-scope-selection" aria-pressed={scope === "selection"} onClick={() => setScope("selection")}>Selection</button>
-          <button type="button" data-testid="comment-scope-document" aria-pressed={scope === "document"} onClick={() => setScope("document")}>Whole document</button>
-          <button type="button" data-testid="comment-scope-run" aria-pressed={scope === "run"} onClick={() => setScope("run")}>Run guidance</button>
+          <button type="button" data-testid="comment-scope-selection" aria-pressed={scope === "selection"} onClick={() => setScope("selection")} disabled={busy}>Selection</button>
+          <button type="button" data-testid="comment-scope-document" aria-pressed={scope === "document"} onClick={() => setScope("document")} disabled={busy}>Whole document</button>
+          <button type="button" data-testid="comment-scope-run" aria-pressed={scope === "run"} onClick={() => setScope("run")} disabled={busy}>Run guidance</button>
         </div>
         {scope === "selection" && <p className="comment-composer__selection" data-testid="comment-selection-status" role="status">{selection ? `Selected: “${selection.quote}”` : "Select text in the editor to anchor this comment."}</p>}
         {scope === "run" && <label>Run ID<input aria-label="Run ID" value={runId} onChange={(event) => setRunId(event.target.value)} placeholder="run-42" /></label>}
-        <label>Comment<textarea aria-label="New comment" value={body} onChange={(event) => setBody(event.target.value)} placeholder={scope === "run" ? "Guidance for this run…" : "Leave feedback…"} rows={3} /></label>
+        <label>Comment<textarea ref={bodyInputRef} aria-label="New comment" value={body} onChange={(event) => setBody(event.target.value)} placeholder={scope === "run" ? "Guidance for this run…" : "Leave feedback…"} rows={3} /></label>
         <button type="button" className="comment-composer__submit" data-testid="add-comment" disabled={busy} onClick={submitComment}>Add {scope === "selection" ? "selection" : scope === "run" ? "run guidance" : "document"} comment</button>
       </section>
 
@@ -210,6 +235,7 @@ export function CommentPane({ projectId, documentPath, documentText, selection, 
           busy={busy}
           itemRef={(element) => { itemRefs.current[comment.id] = element; }}
           onFocus={() => setSelectedId(comment.id)}
+          onClick={() => setSelectedId(comment.id)}
           onKeyDown={(event) => onCommentKeyDown(event, comment)}
           onEdit={() => { setEditingId(comment.id); setEditingBody(comment.body); setSelectedId(comment.id); }}
           onEditBody={setEditingBody}
@@ -230,6 +256,7 @@ interface CommentCardProps {
   busy: boolean;
   itemRef: (element: HTMLDivElement | null) => void;
   onFocus: () => void;
+  onClick: () => void;
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
   onEdit: () => void;
   onEditBody: (body: string) => void;
@@ -238,8 +265,9 @@ interface CommentCardProps {
   onChangeState: (state: CommentState) => void;
 }
 
-function CommentCard({ comment, selected, editing, editingBody, busy, itemRef, onFocus, onKeyDown, onEdit, onEditBody, onCancelEdit, onSaveEdit, onChangeState }: CommentCardProps) {
+function CommentCard({ comment, selected, editing, editingBody, busy, itemRef, onFocus, onClick, onKeyDown, onEdit, onEditBody, onCancelEdit, onSaveEdit, onChangeState }: CommentCardProps) {
   const scopeLabel = comment.scope === "selection" ? "Selection" : comment.scope === "run" ? "Run guidance" : "Whole document";
+  const orphanLabel = orphanReasonLabel(comment.orphanReason);
   return (
     <div
       ref={itemRef}
@@ -247,10 +275,13 @@ function CommentCard({ comment, selected, editing, editingBody, busy, itemRef, o
       className={`comment-card${selected ? " comment-card--selected" : ""}${comment.anchorStatus === "orphaned" ? " comment-card--orphaned" : ""}`}
       role="option"
       aria-selected={selected}
-      aria-label={`${scopeLabel} comment, ${comment.state}`}
+      aria-label={`${scopeLabel} comment, ${comment.state}${comment.anchorStatus === "orphaned" ? `, orphaned: ${orphanLabel}` : ""}`}
+      data-comment-state={comment.state}
+      data-anchor-status={comment.anchorStatus}
       tabIndex={0}
       data-testid={`comment-card-${comment.id}`}
       onFocus={onFocus}
+      onClick={onClick}
       onKeyDown={onKeyDown}
     >
       <div className="comment-card__meta"><span className="comment-card__scope">{scopeLabel}</span><span className={`comment-card__state comment-card__state--${comment.state}`}>{comment.state}</span></div>

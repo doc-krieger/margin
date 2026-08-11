@@ -45,17 +45,24 @@ describe("comment review browser contract", () => {
     expect(JSON.parse(String(calls[2].init?.body))).toMatchObject({ scope: "run", runId: "run-42" });
   });
 
-  it("supports durable edit and user status actions while making automation explicit", async () => {
+  it("supports durable edit and user status actions while rejecting automated resolution", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
+    let transitionCount = 0;
     const client = new ProjectApiClient({
       fetcher: async (url, init) => {
         calls.push({ url: String(url), init });
+        if (String(url).includes("/state")) {
+          transitionCount += 1;
+          if (transitionCount === 1) {
+            return new Response(JSON.stringify({ error: { code: "COMMENT_AUTHORIZATION", message: "Only a user may resolve a comment" } }), { status: 403, headers: { "content-type": "application/json" } });
+          }
+        }
         return new Response(JSON.stringify({ comment: commentResponse({ state: "addressed", body: "Updated" }) }), { status: 200, headers: { "content-type": "application/json" } });
       },
     });
 
     await client.updateComment("project-1", "comment-1", "Updated");
-    await client.transitionComment("project-1", "comment-1", "resolved", "automation");
+    await expect(client.transitionComment("project-1", "comment-1", "resolved", "automation")).rejects.toMatchObject({ code: "COMMENT_AUTHORIZATION", status: 403 });
     await client.transitionComment("project-1", "comment-1", "resolved", "user");
 
     expect(calls[0].init?.method).toBe("PATCH");
@@ -66,10 +73,15 @@ describe("comment review browser contract", () => {
   });
 
   it("surfaces orphan state and reason after a reload/list operation", async () => {
+    const calls: string[] = [];
     const client = new ProjectApiClient({
-      fetcher: async () => new Response(JSON.stringify({ comments: [commentResponse()] }), { status: 200, headers: { "content-type": "application/json" } }),
+      fetcher: async (url) => {
+        calls.push(String(url));
+        return new Response(JSON.stringify({ comments: [commentResponse()] }), { status: 200, headers: { "content-type": "application/json" } });
+      },
     });
     const comments = await client.listComments("project-1", { documentPath: "notes.md" });
+    expect(calls[0]).toContain("documentPath=notes.md");
     expect(comments[0]).toMatchObject({ anchorStatus: "orphaned", orphanReason: "removed-text" });
   });
 });

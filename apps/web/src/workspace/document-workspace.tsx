@@ -55,6 +55,7 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient }:
   useEffect(() => {
     if (!selectedPath) return;
     let cancelled = false;
+    setError(undefined);
     setStatus("Reading document…");
     setSnapshot(undefined);
     setSelection(undefined);
@@ -103,6 +104,8 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient }:
 
   async function reload() {
     if (!selectedPath) return;
+    setError(undefined);
+    setStatus("Reloading document…");
     try {
       const result = await client.readDocument(project.id, selectedPath);
       setSnapshot(result);
@@ -137,6 +140,7 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient }:
           <div className="workspace__actions">
             {editor && <><button type="button" disabled={detectedMode === "source"} aria-pressed={mode === "visual"} onClick={() => setModeOverride("visual")}>Visual</button><button type="button" aria-pressed={mode === "source"} onClick={() => setModeOverride("source")}>Source</button></>}
             <button type="button" data-testid="selection-comment-affordance" disabled={!selection} onClick={() => setCommentScopeRequest((request) => request + 1)}>Comment selection</button>
+            <button type="button" data-testid="reload-document" disabled={!snapshot || dirty || Boolean(conflict)} onClick={reload}>Reload file</button>
             <button type="button" disabled={!dirty || Boolean(conflict)} onClick={save}>Save</button>
           </div>
         </div>

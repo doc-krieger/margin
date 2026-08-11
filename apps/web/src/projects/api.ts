@@ -104,7 +104,9 @@ export class ProjectApiClient {
 
   constructor(options: ProjectApiClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "/api").replace(/\/$/, "");
-    this.fetcher = options.fetcher ?? fetch;
+    // Browsers require fetch to be invoked with Window as its receiver; keep the
+    // injectable fetcher path unchanged for tests and non-browser consumers.
+    this.fetcher = options.fetcher ?? fetch.bind(globalThis);
   }
 
   async listRoots(): Promise<ProjectRoot[]> {
