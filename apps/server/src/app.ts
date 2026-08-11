@@ -64,8 +64,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     if (error.name === "ZodError") {
       return reply.status(400).send({ error: { code: "INVALID_REQUEST", message: error.message, correlationId: request.id } });
     }
-    const status = error.validation || error instanceof TypeError || error instanceof RangeError ? 400 : (error.statusCode && error.statusCode >= 400 ? error.statusCode : 500);
-    return reply.status(status).send({ error: { code: error.validation ? "INVALID_REQUEST" : "INTERNAL_ERROR", message: status === 500 ? "Internal server error" : error.message, correlationId: request.id } });
+    const isInvalidRequest = Boolean(error.validation) || error instanceof TypeError || error instanceof RangeError || error.statusCode === 400;
+    const status = isInvalidRequest ? 400 : (error.statusCode && error.statusCode >= 400 ? error.statusCode : 500);
+    return reply.status(status).send({ error: { code: isInvalidRequest ? "INVALID_REQUEST" : "INTERNAL_ERROR", message: status === 500 ? "Internal server error" : error.message, correlationId: request.id } });
   });
   return app;
 }

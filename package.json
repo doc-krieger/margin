@@ -6,6 +6,8 @@
   "scripts": {
     "test": "node scripts/run-tests.mjs",
     "test:browser": "vitest run tests/browser",
+    "test:integration": "vitest run tests/integration",
+    "acceptance:local": "node scripts/acceptance/local.mjs",
     "typecheck": "tsc -b",
     "build": "npm run build:web && npm run build:server",
     "build:web": "vite build --config apps/web/vite.config.ts",
