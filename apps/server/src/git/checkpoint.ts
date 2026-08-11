@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { lstat, mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -106,6 +106,7 @@ export class GitCheckpointService {
     }
 
     let cleaned = false;
+    let cleanupPromise: Promise<void> | undefined;
     return {
       runId,
       repositoryRoot,
@@ -114,32 +115,41 @@ export class GitCheckpointService {
       worktreePath,
       cleanup: async () => {
         if (cleaned) return;
-        cleaned = true;
-        const failures: string[] = [];
-        const cleanupGit = async (args: string[], timeoutMs = 15_000) => {
+        if (cleanupPromise) return cleanupPromise;
+        cleanupPromise = (async () => {
+          const failures: string[] = [];
+          const cleanupGit = async (args: string[], timeoutMs = 15_000) => {
+            try {
+              const result = await git(args, timeoutMs);
+              if (result.spawnError || result.exitCode !== 0 || result.timedOut || result.aborted) failures.push(formatCommandDiagnostics(result));
+            } catch (error) {
+              failures.push(error instanceof Error ? error.message : String(error));
+            }
+          };
+          const worktreeExists = await lstat(worktreePath).then(() => true).catch(() => false);
+          if (worktreeCreated && worktreeExists) await cleanupGit(["worktree", "remove", "--force", worktreePath], 30_000);
           try {
-            const result = await git(args, timeoutMs);
-            if (result.spawnError || result.exitCode !== 0 || result.timedOut || result.aborted) failures.push(formatCommandDiagnostics(result));
+            await rm(worktreePath, { recursive: true, force: true });
           } catch (error) {
             failures.push(error instanceof Error ? error.message : String(error));
           }
-        };
-        if (worktreeCreated) await cleanupGit(["worktree", "remove", "--force", worktreePath], 30_000);
+          await cleanupGit(["update-ref", "-d", checkpointRef]);
+          await cleanupGit(["worktree", "prune"]);
+          if (!input.worktreeParent) {
+            try {
+              await rm(parent, { recursive: true, force: true });
+            } catch (error) {
+              failures.push(error instanceof Error ? error.message : String(error));
+            }
+          }
+          if (failures.length > 0) throw new GitCheckpointError("GIT_WORKTREE_FAILED", "Checkpoint cleanup completed with failures", failures.join("\n"));
+          cleaned = true;
+        })();
         try {
-          await rm(worktreePath, { recursive: true, force: true });
-        } catch (error) {
-          failures.push(error instanceof Error ? error.message : String(error));
+          await cleanupPromise;
+        } finally {
+          if (!cleaned) cleanupPromise = undefined;
         }
-        await cleanupGit(["update-ref", "-d", checkpointRef]);
-        await cleanupGit(["worktree", "prune"]);
-        if (!input.worktreeParent) {
-          try {
-            await rm(parent, { recursive: true, force: true });
-          } catch (error) {
-            failures.push(error instanceof Error ? error.message : String(error));
-          }
-        }
-        if (failures.length > 0) throw new GitCheckpointError("GIT_WORKTREE_FAILED", "Checkpoint cleanup completed with failures", failures.join("\n"));
       },
     };
   }
