@@ -5,6 +5,13 @@ import { RunControlPanel } from "../runs";
 import { ProposalReviewPanel } from "../proposals";
 import { CheckpointHistoryPanel } from "../history";
 import {
+  getWorkspaceCapabilities,
+  renderMarkdownPreview,
+  useWorkspaceViewport,
+  WorkspacePane,
+  WorkspaceShell,
+} from "../layout/workspace-shell";
+import {
   defaultProjectApiClient,
   ProjectApiError,
   type DocumentEntry,
@@ -84,9 +91,11 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient, p
   const detectedMode = editor?.mode ?? "visual";
   const mode = modeOverride ?? detectedMode;
   const dirty = snapshot !== undefined && draft !== snapshot.content;
+  const isMobile = useWorkspaceViewport();
+  const capabilities = getWorkspaceCapabilities(isMobile);
 
   async function save() {
-    if (!selectedPath || !snapshot) return;
+    if (!capabilities.canEdit || !selectedPath || !snapshot) return;
     setStatus("Saving…");
     setError(undefined);
     try {
@@ -125,60 +134,64 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient, p
   }
 
   function keepLocal() {
-    if (!conflict?.currentHash || !snapshot) return;
+    if (!capabilities.canEdit || !conflict?.currentHash || !snapshot) return;
     setSnapshot({ ...snapshot, hash: conflict.currentHash });
     setConflict(undefined);
     setStatus("Keeping local draft; save again to overwrite the external version");
   }
 
   return (
-    <section className="workspace" data-testid="document-workspace">
-      <aside className="workspace__tree" aria-label="Document navigation">
-        <div className="workspace__tree-heading"><strong>Documents</strong><span>{documents?.documents.length ?? 0}</span></div>
-        <div role="list">
-          {(documents?.documents ?? []).map((document) => <DocumentTreeItem key={document.path} document={document} selected={document.path === selectedPath} onSelect={() => setSelectedPath(document.path)} />)}
-        </div>
-      </aside>
-      <section className="workspace__editor" aria-label="Document editor">
-        <div className="workspace__toolbar">
-          <div><span className="eyebrow">{selectedPath ?? "No selection"}</span><div data-testid="dirty-state" className={dirty ? "dirty" : "clean"}>{dirty ? "Unsaved changes" : "Saved"}</div></div>
-          <div className="workspace__actions">
-            {editor && <><button type="button" disabled={detectedMode === "source"} aria-pressed={mode === "visual"} onClick={() => setModeOverride("visual")}>Visual</button><button type="button" aria-pressed={mode === "source"} onClick={() => setModeOverride("source")}>Source</button></>}
-            <button type="button" data-testid="selection-comment-affordance" disabled={!selection} onClick={() => setCommentScopeRequest((request) => request + 1)}>Comment selection</button>
-            <button type="button" data-testid="reload-document" disabled={!snapshot || dirty || Boolean(conflict)} onClick={reload}>Reload file</button>
-            <button type="button" disabled={!dirty || Boolean(conflict)} onClick={save}>Save</button>
+    <WorkspaceShell projectName={project.name} status={status} error={error} isMobile={isMobile}>
+      <div className="workspace" data-testid="document-workspace">
+        <WorkspacePane id="documents" title="Documents" className="workspace__tree">
+          <div className="workspace__tree-heading"><strong>Documents</strong><span>{documents?.documents.length ?? 0}</span></div>
+          <div role="list" aria-label="Project documents">
+            {(documents?.documents ?? []).map((document) => <DocumentTreeItem key={document.path} document={document} selected={document.path === selectedPath} onSelect={() => setSelectedPath(document.path)} />)}
           </div>
-        </div>
-        {error && <p className="workspace__error" role="alert">{error}</p>}
-        {conflict && <div className="workspace__conflict" role="alert" data-testid="document-conflict"><strong>External change detected.</strong><span>{conflict.message}</span><div><button type="button" onClick={reload}>Reload external version</button><button type="button" disabled={!conflict.currentHash} onClick={keepLocal}>Keep local draft</button></div></div>}
-        {snapshot && editor ? <>
-          <div className="workspace__mode" data-testid="editor-mode">{mode === "source" ? "Source fallback" : "Visual editor"}{isSourceMarkdownEditor(editor) && " · unsupported syntax preserved"}</div>
-          {mode === "visual" && <div className="workspace__preview" aria-label="Visual preview">{renderPreview(draft)}</div>}
-          <textarea aria-label={mode === "source" ? "Source Markdown editor" : "Visual Markdown editor"} data-testid={mode === "source" ? "source-editor" : "visual-editor"} value={draft} onChange={(event) => setDraft(event.target.value)} onSelect={(event) => {
-            const target = event.currentTarget;
-            if (target.selectionStart === target.selectionEnd) {
-              setSelection(undefined);
-            } else {
-              setSelection({ start: target.selectionStart, end: target.selectionEnd, quote: target.value.slice(target.selectionStart, target.selectionEnd) });
-            }
-          }} spellCheck={false} />
-        </> : <p className="workspace__status" data-testid="workspace-status">{status}</p>}
-        <p className="workspace__status" aria-live="polite">{status}</p>
-      </section>
-      {snapshot && <CommentPane projectId={project.id} documentPath={snapshot.path} documentText={draft} selection={selection} refreshKey={snapshot.hash} focusSelectionRequest={commentScopeRequest} client={client} />}
-      <RunControlPanel projectId={project.id} client={client} resumeLatest />
-      {proposalId ? <ProposalReviewPanel projectId={project.id} proposalId={proposalId} /> : null}
-      <CheckpointHistoryPanel projectId={project.id} />
-    </section>
+        </WorkspacePane>
+        <WorkspacePane id="editor" title={capabilities.canEdit ? "Document editor" : "Document reader"} className="workspace__editor">
+          <div className="workspace__toolbar">
+            <div><span className="eyebrow">{selectedPath ?? "No selection"}</span><div data-testid="dirty-state" className={dirty ? "dirty" : "clean"}>{dirty ? "Unsaved changes" : "Saved"}</div></div>
+            <div className="workspace__actions">
+              {editor && capabilities.canEdit && <><button type="button" disabled={detectedMode === "source"} aria-pressed={mode === "visual"} onClick={() => setModeOverride("visual")}>Visual</button><button type="button" aria-pressed={mode === "source"} onClick={() => setModeOverride("source")}>Source</button></>}
+              <button type="button" data-testid="selection-comment-affordance" disabled={!selection} onClick={() => setCommentScopeRequest((request) => request + 1)}>Comment selection</button>
+              <button type="button" data-testid="reload-document" disabled={!snapshot || dirty || Boolean(conflict)} onClick={reload}>Reload file</button>
+              {capabilities.canEdit && <button type="button" disabled={!dirty || Boolean(conflict)} onClick={save}>Save</button>}
+            </div>
+          </div>
+          {error && <p className="workspace__error" role="alert">{error}</p>}
+          {conflict && capabilities.canEdit && <div className="workspace__conflict" role="alert" data-testid="document-conflict"><strong>External change detected.</strong><span>{conflict.message}</span><div><button type="button" onClick={reload}>Reload external version</button><button type="button" disabled={!conflict.currentHash} onClick={keepLocal}>Keep local draft</button></div></div>}
+          {snapshot && editor ? <>
+            <div className="workspace__mode" data-testid="editor-mode">{mode === "source" ? "Source fallback" : "Visual editor"}{isSourceMarkdownEditor(editor) && " · unsupported syntax preserved"}</div>
+            {mode === "visual" && <div className="workspace__preview" aria-label="Visual preview">{renderMarkdownPreview(draft)}</div>}
+            <textarea aria-label={mode === "source" ? "Source Markdown editor" : "Visual Markdown editor"} aria-readonly={!capabilities.canEdit} readOnly={!capabilities.canEdit} data-testid={mode === "source" ? "source-editor" : "visual-editor"} value={draft} onChange={(event) => { if (capabilities.canEdit) setDraft(event.target.value); }} onSelect={(event) => {
+              const target = event.currentTarget;
+              if (target.selectionStart === target.selectionEnd) {
+                setSelection(undefined);
+              } else {
+                setSelection({ start: target.selectionStart, end: target.selectionEnd, quote: target.value.slice(target.selectionStart, target.selectionEnd) });
+              }
+            }} spellCheck={false} />
+          </> : <p className="workspace__status" data-testid="workspace-status">{status}</p>}
+          <p className="workspace__status" aria-live="polite">{status}</p>
+        </WorkspacePane>
+        <WorkspacePane id="comments" title="Comments" className="workspace__comments">
+          {snapshot ? <CommentPane projectId={project.id} documentPath={snapshot.path} documentText={draft} selection={selection} refreshKey={snapshot.hash} focusSelectionRequest={commentScopeRequest} client={client} /> : <p className="workspace__status">Open a document to review comments.</p>}
+        </WorkspacePane>
+        {capabilities.canRun && <WorkspacePane id="runs" title="Runs and proposal review" className="workspace__runs">
+          <RunControlPanel projectId={project.id} client={client} resumeLatest />
+          {proposalId ? <ProposalReviewPanel projectId={project.id} proposalId={proposalId} /> : null}
+        </WorkspacePane>}
+        {capabilities.canRestore && <WorkspacePane id="history" title="Checkpoint history" className="workspace__history">
+          <CheckpointHistoryPanel projectId={project.id} />
+        </WorkspacePane>}
+      </div>
+    </WorkspaceShell>
   );
 }
 
 function DocumentTreeItem({ document, selected, onSelect }: { document: DocumentEntry; selected: boolean; onSelect: () => void }) {
   return <button type="button" role="listitem" className={selected ? "document-item document-item--selected" : "document-item"} aria-current={selected ? "page" : undefined} data-testid={`document-item-${document.path}`} onClick={onSelect}>{document.path}</button>;
-}
-
-function renderPreview(source: string) {
-  return source.split(/\r?\n/).map((line, index) => <p key={`${index}-${line}`}>{line.replace(/^ {0,3}#{1,6}\s+/, "") || " "}</p>);
 }
 
 function messageFor(reason: unknown): string {

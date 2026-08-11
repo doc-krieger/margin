@@ -149,14 +149,114 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   main { max-width: 100%; }
   .workspace { grid-template-columns: 10rem minmax(0, 1fr); }
   .comment-pane { grid-column: 1 / -1; max-height: none; }
+  .workspace__comments { grid-column: 1 / -1; grid-row: auto; max-height: none; }
 }
 @media (max-width: 42rem) {
   main { margin-top: 2rem; padding: 1rem; }
   .app-header, .project-panel__heading, .project-panel__fields { display: block; }
   [data-testid="service-status"] { margin-top: 1rem; }
   .workspace { display: block; }
-  .workspace__tree, .workspace__editor, .comment-pane, .run-panel, .review-panel, .history-panel { margin-top: 1rem; }
+  .workspace__tree, .workspace__editor, .workspace__comments, .comment-pane, .run-panel, .review-panel, .history-panel { margin-top: 1rem; }
   .run-panel__setup, .proposal-layout, .checkpoint-card { display: block; }
   .run-panel__events li { grid-template-columns: 1fr; gap: .15rem; }
   .proposal-files, .checkpoint-card ul, .checkpoint-card button { margin-top: .75rem; }
+}
+
+/* Accessible workspace shell and responsive safety boundary. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.skip-link {
+  position: absolute;
+  top: .5rem;
+  left: .75rem;
+  z-index: 2;
+  padding: .5rem .75rem;
+  transform: translateY(-200%);
+  border-radius: .45rem;
+  background: #201e1b;
+  color: #fff;
+}
+.skip-link:focus { transform: translateY(0); }
+.workspace-shell { margin-top: 1.5rem; }
+.workspace-shell__header, .workspace-shell__status-group {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.workspace-shell__header { padding: .25rem 0 .8rem; }
+.workspace-shell__status-group { align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.workspace-shell__capability, .workspace-shell__state {
+  display: inline-block;
+  padding: .4rem .65rem;
+  border-radius: 999px;
+  font-size: .76rem;
+  font-weight: 750;
+}
+.workspace-shell__capability { color: #52361f; background: #f5e5cf; }
+.workspace-shell__state { color: #35613b; background: #edf7ee; }
+.workspace-shell__mobile-notice {
+  margin: 0 0 .8rem;
+  padding: .65rem .8rem;
+  border-left: 3px solid #8a5b33;
+  background: #fff6e7;
+  color: #635e58;
+  font-size: .82rem;
+  line-height: 1.4;
+}
+.workspace-shell__error { margin: .5rem 0; color: #9c3528; }
+.workspace-shell__navigation { border-bottom: 1px solid #ded8cf; }
+.workspace-shell__navigation [role="tablist"] {
+  display: flex;
+  gap: .25rem;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.workspace-shell__navigation button {
+  margin: 0;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: .45rem .45rem 0 0;
+  background: transparent;
+  color: #635e58;
+  white-space: nowrap;
+}
+.workspace-shell__navigation button[aria-selected="true"] {
+  border-bottom-color: #8a5b33;
+  background: #fff8ee;
+  color: #1b1b1b;
+}
+.workspace-shell__navigation button:focus-visible,
+.workspace-pane:focus-visible { outline: 3px solid rgb(138 91 51 / 45%); outline-offset: 2px; }
+.workspace-shell__panes { min-width: 0; overflow: auto; }
+.workspace-shell__panes > .workspace { margin-top: 1rem; }
+.workspace-pane { min-width: 0; }
+.workspace__comments, .workspace__runs, .workspace__history {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid #ded8cf;
+  border-radius: .9rem;
+  background: #fffdfa;
+}
+.workspace__comments { grid-column: 3; grid-row: 1; max-height: 75vh; overflow: auto; }
+.workspace__runs, .workspace__history { grid-column: 1 / -1; }
+.workspace__comments > .comment-pane { max-height: none; padding: 0; border: 0; background: transparent; }
+[data-viewport="mobile"] .workspace-shell__header { display: block; }
+[data-viewport="mobile"] .workspace-shell__status-group { justify-content: flex-start; margin-top: .7rem; }
+[data-viewport="mobile"] .workspace-shell__panes { overflow: visible; }
+[data-viewport="mobile"] .workspace__comments { max-height: none; }
+[data-viewport="mobile"] .workspace__runs,
+[data-viewport="mobile"] .workspace__history { display: none; }
+[data-viewport="mobile"] .workspace__editor textarea {
+  min-height: 18rem;
+  background: #faf8f4;
 }
