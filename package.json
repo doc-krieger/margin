@@ -16,6 +16,7 @@
   "dependencies": {
     "@fastify/cors": "^10.0.2",
     "@fastify/sensible": "^6.0.3",
+    "@tiptap/pm": "^2.11.5",
     "@tiptap/react": "^2.11.5",
     "drizzle-orm": "^0.38.3",
     "fastify": "^5.2.1",

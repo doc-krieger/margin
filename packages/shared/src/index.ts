@@ -16,3 +16,5 @@ export type ApiError = z.infer<typeof apiErrorSchema>;
 
 export const healthResponseSchema = z.object({ ok: z.literal(true), service: z.literal("margin-api"), correlationId: correlationIdSchema });
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
+
+export * from "./markdown/index.js";
