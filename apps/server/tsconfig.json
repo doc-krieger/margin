@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "composite": true, "declaration": true, "module": "NodeNext", "moduleResolution": "NodeNext",
+    "target": "ES2022", "strict": true, "skipLibCheck": true, "outDir": "dist",
+    "rootDir": "src", "baseUrl": ".", "paths": { "@margin/shared": ["../../packages/shared/src/index.ts"] }
+  },
+  "references": [{ "path": "../../packages/shared/tsconfig.json" }],
+  "include": ["src"]
+}

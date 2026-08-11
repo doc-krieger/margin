@@ -1,0 +1,7 @@
+{
+  "compilerOptions": {
+    "composite": true, "module": "ESNext", "moduleResolution": "Bundler", "target": "ES2022",
+    "strict": true, "jsx": "react-jsx", "skipLibCheck": true, "outDir": "dist"
+  },
+  "include": ["src", "vite.config.ts"]
+}
