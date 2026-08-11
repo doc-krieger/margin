@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { isSourceMarkdownEditor, openMarkdown } from "../editor/markdown-editor";
 import { CommentPane, type TextSelection } from "../comments/comment-pane";
 import { RunControlPanel } from "../runs";
+import { ProposalReviewPanel } from "../proposals";
+import { CheckpointHistoryPanel } from "../history";
 import {
   defaultProjectApiClient,
   ProjectApiError,
@@ -15,10 +17,12 @@ import {
 export interface DocumentWorkspaceProps {
   project: ProjectView;
   client?: ProjectApiClient;
+  /** Proposal deep links are explicit because proposal IDs never imply canonical document identity. */
+  proposalId?: string;
 }
 
 /** File-backed document workspace. Local draft state is never treated as saved state. */
-export function DocumentWorkspace({ project, client = defaultProjectApiClient }: DocumentWorkspaceProps) {
+export function DocumentWorkspace({ project, client = defaultProjectApiClient, proposalId }: DocumentWorkspaceProps) {
   const [documents, setDocuments] = useState<DocumentList>();
   const [selectedPath, setSelectedPath] = useState<string>();
   const [snapshot, setSnapshot] = useState<DocumentSnapshot>();
@@ -163,6 +167,8 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient }:
       </section>
       {snapshot && <CommentPane projectId={project.id} documentPath={snapshot.path} documentText={draft} selection={selection} refreshKey={snapshot.hash} focusSelectionRequest={commentScopeRequest} client={client} />}
       <RunControlPanel projectId={project.id} client={client} resumeLatest />
+      {proposalId ? <ProposalReviewPanel projectId={project.id} proposalId={proposalId} /> : null}
+      <CheckpointHistoryPanel projectId={project.id} />
     </section>
   );
 }

@@ -111,6 +111,40 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .run-panel__events li code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-panel__empty { color: #635e58; font-size: .84rem; }
 
+.review-panel, .history-panel { grid-column: 1 / -1; margin-top: 1.25rem; padding: 1rem; border: 1px solid #d8d0c5; border-radius: .7rem; background: #fffdf9; }
+.review-panel__heading, .history-panel__heading, .proposal-diff__heading, .proposal-editor__heading, .restore-panel__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.boundary-notice { padding: .75rem; border-left: .25rem solid #8a5b33; background: #f7f0e7; color: #514940; line-height: 1.45; }
+.error-notice, .success-notice, .operation-status { padding: .7rem .8rem; border-radius: .4rem; }
+.error-notice { color: #763427; background: #f8dfd6; }
+.success-notice { color: #285833; background: #edf7ee; }
+.operation-status { color: #554e47; background: #eeeae4; }
+.status-badge, .history-count { display: inline-block; padding: .35rem .6rem; border-radius: 999px; background: #eee6dc; color: #635e58; font-size: .72rem; font-weight: 750; text-transform: capitalize; white-space: nowrap; }
+.status-badge--kept, .status-badge--restored { color: #285833; background: #dff0e2; }
+.status-badge--rejected, .status-badge--failed, .status-badge--conflict { color: #763427; background: #f8dfd6; }
+.proposal-layout { display: grid; grid-template-columns: minmax(12rem, .35fr) minmax(0, 1fr); gap: 1rem; margin-top: 1rem; }
+.proposal-files { min-width: 0; }
+.proposal-files ul, .checkpoint-list, .checkpoint-card ul { margin: 0; padding: 0; list-style: none; }
+.proposal-files button { width: 100%; display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; margin-bottom: .35rem; padding: .6rem; border: 1px solid transparent; background: #f4f1eb; color: #28231f; text-align: left; }
+.proposal-files button span, .checkpoint-card li span { min-width: 0; overflow-wrap: anywhere; }
+.proposal-files button small, .checkpoint-card li small { color: #766b61; text-transform: capitalize; }
+.proposal-files button.is-selected { border-color: #8a5b33; background: #f9efe5; }
+.proposal-diff pre, .restore-panel pre { max-height: 28rem; overflow: auto; margin: .5rem 0 .75rem; padding: .85rem; border-radius: .4rem; background: #201e1b; color: #f7f2ea; font: .8rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
+.proposal-editor, .restore-panel, .confirmation-panel { margin-top: 1rem; padding: 1rem; border: 1px solid #cfbba6; border-radius: .55rem; background: #faf5ee; }
+.proposal-editor textarea { box-sizing: border-box; width: 100%; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.proposal-editor__actions, .decision-panel, .decision-panel__actions, .confirmation-panel > div { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .75rem; }
+.proposal-editor__actions { margin-top: .65rem; color: #635e58; font-size: .82rem; }
+.decision-panel { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e4ded5; }
+.decision-panel p { margin: .25rem 0 0; color: #635e58; }
+.button-secondary { background: #eee6dc; color: #403932; }
+.button-quiet { background: transparent; color: #65594e; border-color: #b9aea2; }
+.button-danger { background: #8a392e; }
+.checkpoint-list > li { padding: .85rem 0; border-top: 1px solid #e4ded5; }
+.checkpoint-card { display: grid; grid-template-columns: minmax(11rem, .7fr) minmax(12rem, 1fr) auto; align-items: center; gap: 1rem; }
+.checkpoint-card > div { display: grid; gap: .25rem; }
+.checkpoint-card time { color: #635e58; font-size: .76rem; }
+.checkpoint-card__meta { display: flex; align-items: center; gap: .5rem; }
+.checkpoint-card li { display: flex; justify-content: space-between; gap: .5rem; padding: .2rem 0; font-size: .82rem; }
+
 @media (max-width: 64rem) {
   main { max-width: 100%; }
   .workspace { grid-template-columns: 10rem minmax(0, 1fr); }
@@ -121,7 +155,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .app-header, .project-panel__heading, .project-panel__fields { display: block; }
   [data-testid="service-status"] { margin-top: 1rem; }
   .workspace { display: block; }
-  .workspace__tree, .workspace__editor, .comment-pane, .run-panel { margin-top: 1rem; }
-  .run-panel__setup { display: block; }
+  .workspace__tree, .workspace__editor, .comment-pane, .run-panel, .review-panel, .history-panel { margin-top: 1rem; }
+  .run-panel__setup, .proposal-layout, .checkpoint-card { display: block; }
   .run-panel__events li { grid-template-columns: 1fr; gap: .15rem; }
+  .proposal-files, .checkpoint-card ul, .checkpoint-card button { margin-top: .75rem; }
 }
