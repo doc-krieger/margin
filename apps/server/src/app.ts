@@ -7,11 +7,14 @@ import { ProjectLifecycleError, ProjectLifecycleService } from "./projects/servi
 import { registerProjectRoutes } from "./projects/routes.js";
 import { DocumentError, DocumentService, registerDocumentRoutes } from "./documents/index.js";
 import { CommentAuthorizationError, CommentNotFoundError, CommentService, InvalidCommentTransitionError, registerCommentRoutes } from "./comments/index.js";
+import { RevisionRunError, RevisionRunService } from "./runs/service.js";
+import { registerRunRoutes } from "./runs/routes.js";
 
 export interface BuildAppOptions {
   projectService?: ProjectLifecycleService;
   documentService?: DocumentService;
   commentService?: CommentService;
+  runService?: RevisionRunService;
 }
 
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
@@ -25,6 +28,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   registerDocumentRoutes(app, documentService);
   const commentService = options.commentService ?? new CommentService();
   registerCommentRoutes(app, commentService, documentService);
+  const runService = options.runService ?? new RevisionRunService();
+  registerRunRoutes(app, runService, projectService, commentService);
   app.setErrorHandler((error: FastifyError, request, reply) => {
     request.log.error({ err: error, correlationId: request.id }, "request failed");
     if (error instanceof DocumentError) {
@@ -49,6 +54,15 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     }
     if (error instanceof InvalidCommentTransitionError) {
       return reply.status(409).send({ error: { code: "COMMENT_INVALID_STATE_TRANSITION", message: error.message, details: { from: error.from, to: error.to }, correlationId: request.id } });
+    }
+    if (error instanceof RevisionRunError) {
+      const status = error.code === "RUN_NOT_FOUND" || error.code === "PI_PROFILE_NOT_FOUND" ? 404
+        : error.code === "PI_UNAVAILABLE" ? 503
+        : error.code === "RUN_NOT_CANCELLABLE" || error.code === "RUN_ALREADY_EXISTS" ? 409 : 400;
+      return reply.status(status).send({ error: { code: error.code, message: error.message, correlationId: request.id } });
+    }
+    if (error.name === "ZodError") {
+      return reply.status(400).send({ error: { code: "INVALID_REQUEST", message: error.message, correlationId: request.id } });
     }
     const status = error.validation || error instanceof TypeError || error instanceof RangeError ? 400 : (error.statusCode && error.statusCode >= 400 ? error.statusCode : 500);
     return reply.status(status).send({ error: { code: error.validation ? "INVALID_REQUEST" : "INTERNAL_ERROR", message: status === 500 ? "Internal server error" : error.message, correlationId: request.id } });

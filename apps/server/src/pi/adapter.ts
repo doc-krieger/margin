@@ -15,6 +15,12 @@ export interface PiRunInput {
   signal?: AbortSignal;
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  /** Continue the append-only event sequence owned by the orchestrator. */
+  eventSequenceStart?: number;
+  /** The orchestrator owns the initial lifecycle event when false. */
+  emitStarted?: boolean;
+  /** The orchestrator owns the terminal lifecycle event when false. */
+  emitTerminal?: boolean;
 }
 
 export interface PiRunResult {
@@ -47,22 +53,24 @@ function linePayload(line: string): Record<string, unknown> {
 export async function runPiProcess(manifestInput: PiProfileManifest, input: PiRunInput, eventStore: RunEventStore): Promise<PiRunResult> {
   const manifest = piProfileManifestSchema.parse(manifestInput);
   const startedAt = Date.now();
-  let sequence = 0;
+  let sequence = input.eventSequenceStart ?? 0;
   let eventChain = Promise.resolve();
   const emit = (type: RunEvent["type"], payload: Record<string, unknown>) => {
     const event = makeRunEvent(input.runId, input.correlationId, sequence++, type, payload);
     eventChain = eventChain.then(() => eventStore.append(event));
   };
 
-  emit("run.started", {
-    command: manifest.command,
-    args: manifest.runArgs,
-    cwd: input.cwd,
-    protocol: manifest.protocol,
-  });
+  if (input.emitStarted !== false) {
+    emit("run.started", {
+      command: manifest.command,
+      args: manifest.runArgs,
+      cwd: input.cwd,
+      protocol: manifest.protocol,
+    });
+  }
 
   if (input.signal?.aborted) {
-    emit("run.cancelled", { reason: "cancelled before Pi process started" });
+    if (input.emitTerminal !== false) emit("run.cancelled", { reason: "cancelled before Pi process started" });
     await eventChain;
     throw new PiProcessError("PI_CANCELLED", "Pi run cancelled before process start", "aborted: true");
   }
@@ -164,27 +172,27 @@ export async function runPiProcess(manifestInput: PiProfileManifest, input: PiRu
   ].filter((value): value is string => Boolean(value)).join("\n");
 
   if (cancelled) {
-    emit("run.cancelled", { reason: "abort signal", diagnostics });
+    if (input.emitTerminal !== false) emit("run.cancelled", { reason: "abort signal", diagnostics });
     await eventChain;
     throw new PiProcessError("PI_CANCELLED", "Pi run cancelled", diagnostics);
   }
   if (timedOut) {
-    emit("run.failed", { code: "PI_TIMEOUT", diagnostics });
+    if (input.emitTerminal !== false) emit("run.failed", { code: "PI_TIMEOUT", diagnostics });
     await eventChain;
     throw new PiProcessError("PI_TIMEOUT", `Pi run exceeded ${timeoutMs}ms`, diagnostics);
   }
   if (protocolError) {
-    emit("run.failed", { code: "PI_PROTOCOL_ERROR", diagnostics, error: protocolError });
+    if (input.emitTerminal !== false) emit("run.failed", { code: "PI_PROTOCOL_ERROR", diagnostics, error: protocolError });
     await eventChain;
     throw new PiProcessError("PI_PROTOCOL_ERROR", protocolError, diagnostics);
   }
   if (closeCode !== 0) {
-    emit("run.failed", { code: "PI_EXITED", diagnostics });
+    if (input.emitTerminal !== false) emit("run.failed", { code: "PI_EXITED", diagnostics });
     await eventChain;
     throw new PiProcessError("PI_EXITED", `Pi exited with code ${closeCode ?? "unknown"}`, diagnostics);
   }
 
-  emit("run.completed", { exitCode: closeCode, durationMs: Date.now() - startedAt });
+  if (input.emitTerminal !== false) emit("run.completed", { exitCode: closeCode, durationMs: Date.now() - startedAt });
   await eventChain;
   return {
     runId: input.runId,

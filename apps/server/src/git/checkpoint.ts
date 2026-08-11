@@ -115,13 +115,31 @@ export class GitCheckpointService {
       cleanup: async () => {
         if (cleaned) return;
         cleaned = true;
-        if (worktreeCreated) {
-          await git(["worktree", "remove", "--force", worktreePath], 30_000).catch(() => undefined);
+        const failures: string[] = [];
+        const cleanupGit = async (args: string[], timeoutMs = 15_000) => {
+          try {
+            const result = await git(args, timeoutMs);
+            if (result.spawnError || result.exitCode !== 0 || result.timedOut || result.aborted) failures.push(formatCommandDiagnostics(result));
+          } catch (error) {
+            failures.push(error instanceof Error ? error.message : String(error));
+          }
+        };
+        if (worktreeCreated) await cleanupGit(["worktree", "remove", "--force", worktreePath], 30_000);
+        try {
+          await rm(worktreePath, { recursive: true, force: true });
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : String(error));
         }
-        await rm(worktreePath, { recursive: true, force: true });
-        await git(["update-ref", "-d", checkpointRef]).catch(() => undefined);
-        await git(["worktree", "prune"]).catch(() => undefined);
-        if (!input.worktreeParent) await rm(parent, { recursive: true, force: true });
+        await cleanupGit(["update-ref", "-d", checkpointRef]);
+        await cleanupGit(["worktree", "prune"]);
+        if (!input.worktreeParent) {
+          try {
+            await rm(parent, { recursive: true, force: true });
+          } catch (error) {
+            failures.push(error instanceof Error ? error.message : String(error));
+          }
+        }
+        if (failures.length > 0) throw new GitCheckpointError("GIT_WORKTREE_FAILED", "Checkpoint cleanup completed with failures", failures.join("\n"));
       },
     };
   }

@@ -18,5 +18,5 @@ export const healthResponseSchema = z.object({ ok: z.literal(true), service: z.l
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 
 export * from "./comments/index.js";
-
+export * from "./runs/contracts.js";
 export * from "./markdown/index.js";

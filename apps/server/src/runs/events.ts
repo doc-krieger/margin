@@ -1,29 +1,15 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { z } from "zod";
+import {
+  makeRunEvent,
+  runEventSchema,
+  runEventTypeSchema,
+  type RunEvent,
+  type RunEventType,
+} from "../../../../packages/shared/src/runs/contracts.js";
 
-export const runEventTypeSchema = z.enum([
-  "run.started",
-  "pi.event",
-  "pi.stderr",
-  "pi.invalid",
-  "diagnostic",
-  "run.completed",
-  "run.failed",
-  "run.cancelled",
-]);
-
-export const runEventSchema = z.object({
-  runId: z.string().min(1).max(128).regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/),
-  correlationId: z.string().uuid(),
-  sequence: z.number().int().nonnegative(),
-  timestamp: z.string().datetime({ offset: true }),
-  type: runEventTypeSchema,
-  payload: z.record(z.unknown()),
-});
-
-export type RunEvent = z.infer<typeof runEventSchema>;
-export type RunEventType = z.infer<typeof runEventTypeSchema>;
+export { makeRunEvent, runEventSchema, runEventTypeSchema };
+export type { RunEvent, RunEventType };
 
 export interface RunEventStore {
   append(event: RunEvent): Promise<void>;
@@ -97,12 +83,3 @@ export class MemoryRunEventStore implements RunEventStore {
   }
 }
 
-export function makeRunEvent(
-  runId: string,
-  correlationId: string,
-  sequence: number,
-  type: RunEventType,
-  payload: Record<string, unknown>,
-): RunEvent {
-  return runEventSchema.parse({ runId, correlationId, sequence, timestamp: new Date().toISOString(), type, payload });
-}
