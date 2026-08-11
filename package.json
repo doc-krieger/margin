@@ -11,6 +11,7 @@
     "build:server": "tsc -p apps/server/tsconfig.json",
     "dev:web": "vite --config apps/web/vite.config.ts",
     "dev:server": "tsx apps/server/src/index.ts",
+    "preflight:pi": "tsx scripts/preflight-pi.ts",
     "db:generate": "drizzle-kit generate --config drizzle/drizzle.config.ts"
   },
   "dependencies": {
