@@ -67,8 +67,12 @@ describe("end-to-end safety workflow", () => {
     const repositoryRoot = await repositoryFixture();
     const dataDirectory = await mkdtemp(path.join(os.tmpdir(), "margin-e2e-data-"));
     const projects = new ProjectLifecycleService();
-    const runs = new RevisionRunService({ profiles: fixtureProfiles(), dataDirectory });
-    const app = buildApp({ projectService: projects, runService: runs });
+    const proposalService = new ProposalService({
+      proposalStore: new MemoryProposalStore(),
+      auditStore: new MemoryProposalAuditStore(),
+    });
+    const runs = new RevisionRunService({ profiles: fixtureProfiles(), dataDirectory, proposalService });
+    const app = buildApp({ projectService: projects, runService: runs, proposalService });
     let keptCheckpoint: Awaited<ReturnType<GitCheckpointService["create"]>> | undefined;
     let rejectedCheckpoint: Awaited<ReturnType<GitCheckpointService["create"]>> | undefined;
 
@@ -148,7 +152,9 @@ describe("end-to-end safety workflow", () => {
       const successfulRun = await runs.waitForCompletion(successfulRunStart.body.runId);
       expect(successfulRun.status).toBe("completed");
       expect(successfulRun.changedFiles).toEqual([{ path: "proposal.md", status: "untracked" }]);
-      expect(successfulRun.cleanup.status).toBe("completed");
+      expect(successfulRun.proposalId).toEqual(expect.any(String));
+      expect(successfulRun.cleanup.status).toBe("pending");
+      await expect(access(successfulRun.checkpoint!.worktreePath)).resolves.toBeUndefined();
       await expect(access(path.join(repositoryRoot, "proposal.md"))).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(path.join(repositoryRoot, "README.md"), "utf8")).toBe(editedContent);
 
@@ -164,6 +170,19 @@ describe("end-to-end safety workflow", () => {
       expect(invalidEventsQuery.response.statusCode).toBe(400);
       expect(invalidEventsQuery.body.error.code).toBe("INVALID_REQUEST");
 
+      const generatedReview = await request(app, "GET", `/api/projects/${projectId}/proposals/${successfulRun.proposalId}`);
+      expect(generatedReview.response.statusCode).toBe(200);
+      expect(generatedReview.body.review.diff.files).toEqual([{ path: "proposal.md", status: "untracked" }]);
+      const generatedFile = await request(app, "GET", `/api/projects/${projectId}/proposals/${successfulRun.proposalId}/files/proposal.md`);
+      expect(generatedFile.body.content).toBe("proposal\n");
+      const rejectedGenerated = await request(app, "POST", `/api/projects/${projectId}/proposals/${successfulRun.proposalId}/decision`, { decision: "reject" });
+      expect(rejectedGenerated.body.review.proposal).toMatchObject({ status: "rejected", decision: "reject", cleanup: { status: "completed" } });
+      expect((await runs.get(successfulRun.runId)).cleanup.status).toBe("completed");
+      const rejectedReview = await request(app, "GET", `/api/projects/${projectId}/proposals/${successfulRun.proposalId}`);
+      expect(rejectedReview.body.review.proposal.status).toBe("rejected");
+      await expect(access(successfulRun.checkpoint!.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(path.join(repositoryRoot, "proposal.md"))).rejects.toMatchObject({ code: "ENOENT" });
+
       const failingRunStart = await request(app, "POST", `/api/projects/${projectId}/runs`, {
         profileId: "failure",
         selectedCommentIds: [commentId],
@@ -176,12 +195,24 @@ describe("end-to-end safety workflow", () => {
       expect(failingRun.diagnostics).toContain("fake Pi failure diagnostics");
       expect(failingRun.cleanup.status).toBe("completed");
 
+      const keptRunStart = await request(app, "POST", `/api/projects/${projectId}/runs`, {
+        profileId: "fixture",
+        selectedCommentIds: [commentId],
+        guidance: "Create the proposal that will be kept.",
+      });
+      const keptRun = await runs.waitForCompletion(keptRunStart.body.runId);
+      const keptGenerated = await request(app, "POST", `/api/projects/${projectId}/proposals/${keptRun.proposalId}/decision`, { decision: "keep" });
+      expect(keptGenerated.body.review.proposal).toMatchObject({ status: "kept", decision: "keep", cleanup: { status: "completed" } });
+      expect((await runs.get(keptRun.runId)).cleanup.status).toBe("completed");
+      const keptReview = await request(app, "GET", `/api/projects/${projectId}/proposals/${keptRun.proposalId}`);
+      expect(keptReview.body.review.proposal.status).toBe("kept");
+      expect(await readFile(path.join(repositoryRoot, "proposal.md"), "utf8")).toBe("proposal\n");
+      await expect(access(keptRun.checkpoint!.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+      await git(repositoryRoot, ["add", "proposal.md"]);
+      await git(repositoryRoot, ["commit", "-m", "keep generated run proposal"]);
+
       // Review a real detached checkpoint: diff first, edit the proposal, then keep the whole run.
       keptCheckpoint = await new GitCheckpointService().create({ repositoryRoot, runId: `keep-${Date.now()}` });
-      const proposalService = new ProposalService({
-        proposalStore: new MemoryProposalStore(),
-        auditStore: new MemoryProposalAuditStore(),
-      });
       const keptProposal = await proposalService.create({
         runId: keptCheckpoint.runId,
         repositoryRoot,
@@ -192,7 +223,7 @@ describe("end-to-end safety workflow", () => {
       const diff = await proposalService.refresh(keptProposal.proposalId);
       expect(diff.diff.files).toEqual([
         { path: "README.md", status: "modified" },
-        { path: "proposal.md", status: "untracked" },
+        { path: "proposal.md", status: "modified" },
       ]);
       expect(diff.diff.patch).toContain("proposal.md");
       const proposalDocument = await proposalService.readFile(keptProposal.proposalId, "README.md");

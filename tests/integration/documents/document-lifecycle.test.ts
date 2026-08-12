@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildApp } from "../../../apps/server/src/app.js";
-import { DocumentService } from "../../../apps/server/src/documents/service.js";
+import { DocumentError, DocumentService } from "../../../apps/server/src/documents/service.js";
 import { ProjectLifecycleService } from "../../../apps/server/src/projects/service.js";
 
 async function setup() {
@@ -38,6 +38,23 @@ describe("canonical document lifecycle", () => {
     await writeFile(path.join(context.projectPath, "README.md"), "# External\n");
     await expect(documents.saveDocument(context.projectId, { path: "README.md", content: "# Local\n", baseHash: before.hash })).rejects.toMatchObject({ code: "DOCUMENT_CONFLICT" });
     await expect(documents.readDocument(context.projectId, "../outside.md")).rejects.toMatchObject({ code: "DOCUMENT_PATH_INVALID" });
+  });
+
+  it("rejects malformed UTF-8 without rewriting the original bytes", async () => {
+    const context = await setup();
+    const invalidBytes = Buffer.from([0x66, 0x6f, 0x80, 0x6f]);
+    await writeFile(path.join(context.projectPath, "notes", "binary.dat"), invalidBytes);
+    const documents = new DocumentService(context.projects);
+
+    await expect(documents.readDocument(context.projectId, "notes/binary.dat")).rejects.toMatchObject<DocumentError>({ code: "DOCUMENT_NOT_TEXT" });
+    expect(await readFile(path.join(context.projectPath, "notes", "binary.dat"))).toEqual(invalidBytes);
+
+    const app = buildApp({ projectService: context.projects, documentService: documents });
+    const response = await app.inject({ method: "GET", url: `/api/projects/${context.projectId}/documents/notes/binary.dat` });
+    expect(response.statusCode).toBe(422);
+    expect(response.json().error.code).toBe("DOCUMENT_NOT_TEXT");
+    expect(await readFile(path.join(context.projectPath, "notes", "binary.dat"))).toEqual(invalidBytes);
+    await app.close();
   });
 
   it("exposes document navigation and conflict diagnostics through the API", async () => {

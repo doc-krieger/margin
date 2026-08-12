@@ -99,6 +99,7 @@ export const revisionRunRecordSchema = z.object({
   endedAt: z.string().datetime({ offset: true }).nullable(),
   durationMs: z.number().int().nonnegative().nullable(),
   checkpoint: runCheckpointSchema.nullable(),
+  proposalId: z.string().min(1).max(128).nullable().default(null),
   manifest: revisionInstructionManifestSchema.nullable(),
   changedFiles: z.array(changedFileSchema),
   diagnostics: z.string().max(32_000).nullable(),

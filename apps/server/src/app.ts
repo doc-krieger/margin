@@ -2,6 +2,9 @@ import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import sensible from "@fastify/sensible";
 import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 import { healthResponseSchema } from "../../../packages/shared/src/index.js";
 import { ProjectLifecycleError, ProjectLifecycleService } from "./projects/service.js";
 import { registerProjectRoutes } from "./projects/routes.js";
@@ -9,12 +12,16 @@ import { DocumentError, DocumentService, registerDocumentRoutes } from "./docume
 import { CommentAuthorizationError, CommentNotFoundError, CommentService, InvalidCommentTransitionError, registerCommentRoutes } from "./comments/index.js";
 import { RevisionRunError, RevisionRunService } from "./runs/service.js";
 import { registerRunRoutes } from "./runs/routes.js";
+import { ProposalError, ProposalService } from "./proposals/service.js";
+import { registerProposalRoutes } from "./proposals/routes.js";
 
 export interface BuildAppOptions {
   projectService?: ProjectLifecycleService;
   documentService?: DocumentService;
   commentService?: CommentService;
   runService?: RevisionRunService;
+  proposalService?: ProposalService;
+  commentDatabasePath?: string;
 }
 
 export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
@@ -26,10 +33,19 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   registerProjectRoutes(app, projectService);
   const documentService = options.documentService ?? new DocumentService(projectService);
   registerDocumentRoutes(app, documentService);
-  const commentService = options.commentService ?? new CommentService();
+  const commentDatabasePath = options.commentDatabasePath ?? process.env.MARGIN_COMMENT_DATABASE ?? path.join(homedir(), ".margin", "comments.sqlite");
+  if (!options.commentService) mkdirSync(path.dirname(commentDatabasePath), { recursive: true });
+  const commentService = options.commentService ?? new CommentService(commentDatabasePath);
+  if (!options.commentService) app.addHook("onClose", async () => commentService.close());
   registerCommentRoutes(app, commentService, documentService);
-  const runService = options.runService ?? new RevisionRunService();
+  if (options.runService && !options.proposalService) throw new TypeError("proposalService is required when runService is provided");
+  const proposalService = options.proposalService ?? new ProposalService();
+  const runService = options.runService ?? new RevisionRunService({ proposalService });
+  proposalService.setCleanupObserver(async (proposal) => {
+    await runService.recordProposalCleanup(proposal.runId, proposal.cleanup);
+  });
   registerRunRoutes(app, runService, projectService, commentService);
+  registerProposalRoutes(app, proposalService, projectService);
   app.setErrorHandler((error: FastifyError, request, reply) => {
     request.log.error({ err: error, correlationId: request.id }, "request failed");
     if (error instanceof DocumentError) {
@@ -60,6 +76,12 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
         : error.code === "PI_UNAVAILABLE" ? 503
         : error.code === "RUN_NOT_CANCELLABLE" || error.code === "RUN_ALREADY_EXISTS" ? 409 : 400;
       return reply.status(status).send({ error: { code: error.code, message: error.message, correlationId: request.id } });
+    }
+    if (error instanceof ProposalError) {
+      const status = error.code === "PROPOSAL_NOT_FOUND" ? 404
+        : ["PROPOSAL_ALREADY_EXISTS", "PROPOSAL_INVALID_STATE", "PROPOSAL_CONFLICT"].includes(error.code) ? 409
+        : error.code === "PROPOSAL_CLEANUP_FAILED" ? 500 : 400;
+      return reply.status(status).send({ error: { code: error.code, message: error.message, details: error.details, correlationId: request.id } });
     }
     if (error.name === "ZodError") {
       return reply.status(400).send({ error: { code: "INVALID_REQUEST", message: error.message, correlationId: request.id } });

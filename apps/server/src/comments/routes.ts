@@ -88,19 +88,23 @@ export function registerCommentRoutes(app: FastifyInstance, comments: CommentSer
   });
 
   app.patch("/api/projects/:projectId/comments/:commentId", async (request, reply) => {
-    const { commentId } = request.params as CommentParams;
+    const { projectId, commentId } = request.params as CommentParams;
+    const id = requiredString(commentId, "commentId");
+    comments.requireForProject(projectId, id);
     const body = asRecord(request.body);
-    const comment = comments.updateBody(requiredString(commentId, "commentId"), requiredString(body.body, "body"));
+    const comment = comments.updateBody(id, requiredString(body.body, "body"));
     return reply.header("x-correlation-id", request.id).send({ comment });
   });
 
   const transition = async (request: any, reply: any) => {
-    const { commentId } = request.params as CommentParams;
+    const { projectId, commentId } = request.params as CommentParams;
+    const id = requiredString(commentId, "commentId");
+    comments.requireForProject(projectId, id);
     const body = asRecord(request.body);
     const state = body.state;
     if (state !== "open" && state !== "addressed" && state !== "resolved") throw new TypeError("state must be open, addressed, or resolved");
     const actor: CommentActor = body.actor === "automation" ? "automation" : "user";
-    const comment = comments.transition(requiredString(commentId, "commentId"), state, actor);
+    const comment = comments.transition(id, state, actor);
     return reply.header("x-correlation-id", request.id).send({ comment });
   };
   app.post("/api/projects/:projectId/comments/:commentId/state", transition);

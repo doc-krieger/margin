@@ -50,6 +50,7 @@ export interface ProposalServiceOptions {
   gitService?: GitProposalService;
   dataDirectory?: string;
   clock?: ProposalClock;
+  onCleanup?: (record: ProposalRecord) => Promise<void>;
 }
 
 export type ProposalErrorCode =
@@ -148,6 +149,7 @@ export class ProposalService {
   private readonly auditStore: ProposalAuditStore;
   private readonly git: GitProposalService;
   private readonly clock: ProposalClock;
+  private onCleanup?: (record: ProposalRecord) => Promise<void>;
   private readonly cleanupHandlers = new Map<string, ProposalCleanup>();
   private readonly locks = new Map<string, Promise<void>>();
 
@@ -157,6 +159,11 @@ export class ProposalService {
     this.auditStore = options.auditStore ?? new FileProposalAuditStore(path.join(dataDirectory, "audit"));
     this.git = options.gitService ?? new GitProposalService();
     this.clock = options.clock ?? (() => new Date());
+    this.onCleanup = options.onCleanup;
+  }
+
+  setCleanupObserver(observer: (record: ProposalRecord) => Promise<void>): void {
+    this.onCleanup = observer;
   }
 
   async create(input: CreateProposalInput): Promise<ProposalRecord> {
@@ -188,7 +195,12 @@ export class ProposalService {
     };
     await this.proposalStore.save(record);
     if (cleanup) this.cleanupHandlers.set(proposalId, cleanup);
-    await this.recordAudit(record, "created", { changedFiles: diff.files.length });
+    try {
+      await this.recordAudit(record, "created", { changedFiles: diff.files.length });
+    } catch {
+      // The durable proposal record is the checkpoint ownership boundary. Audit
+      // failure must not make the run service delete a now-owned worktree.
+    }
     return record;
   }
 
@@ -312,6 +324,11 @@ export class ProposalService {
     return this.retryCleanup(proposalId);
   }
 
+  async syncCleanup(proposalId: string): Promise<void> {
+    const record = await this.get(proposalId);
+    if (record.status !== "pending") await this.notifyCleanup(record);
+  }
+
   async audit(proposalId: string): Promise<ProposalAuditRecord[]> {
     await this.get(proposalId);
     return this.auditStore.list(proposalId);
@@ -338,7 +355,10 @@ export class ProposalService {
   }
 
   private async cleanupAfterDecision(record: ProposalRecord): Promise<ProposalRecord> {
-    if (record.cleanup.status === "completed") return record;
+    if (record.cleanup.status === "completed") {
+      await this.notifyCleanup(record);
+      return record;
+    }
     const startedAt = now(this.clock);
     let current: ProposalRecord = { ...record, cleanup: nextCleanup(record, "pending", startedAt, null), updatedAt: startedAt };
     await this.proposalStore.save(current);
@@ -356,7 +376,17 @@ export class ProposalService {
       await this.proposalStore.save(current);
       await this.recordAudit(current, "cleanup.failed", { diagnostics });
     }
+    await this.notifyCleanup(current);
     return current;
+  }
+
+  private async notifyCleanup(record: ProposalRecord): Promise<void> {
+    try {
+      await this.onCleanup?.(record);
+    } catch {
+      // The proposal decision and workspace cleanup are already durable. A later
+      // cleanup retry replays this observer to reconcile the parent run record.
+    }
   }
 
   private async recordAudit(record: ProposalRecord, action: ProposalAuditRecord["action"], details: Record<string, unknown>): Promise<void> {

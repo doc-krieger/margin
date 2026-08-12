@@ -52,6 +52,28 @@ async function openProposal() {
 }
 
 describe("whole-run proposal review", () => {
+  it("preserves proposal ownership when creation audit persistence fails", async () => {
+    const fixture = await repositoryFixture();
+    let auditAttempts = 0;
+    const proposalService = new ProposalService({
+      proposalStore: new MemoryProposalStore(),
+      auditStore: {
+        append: async () => {
+          auditAttempts += 1;
+          if (auditAttempts === 1) throw new Error("audit unavailable");
+        },
+        list: async () => [],
+      },
+    });
+
+    const proposal = await proposalService.create({ runId: fixture.checkpoint.runId, repositoryRoot: fixture.root, checkpoint: fixture.checkpoint });
+    await expect(access(fixture.checkpoint.worktreePath)).resolves.toBeUndefined();
+    expect((await proposalService.get(proposal.proposalId)).status).toBe("pending");
+    await proposalService.reject(proposal.proposalId);
+    await expect(access(fixture.checkpoint.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await rm(fixture.root, { recursive: true, force: true });
+  });
+
   it("reports a complete checkpoint-to-worktree diff and changed-file inventory", async () => {
     const { checkpoint, proposalService, proposal } = await openProposal();
     await writeFile(path.join(checkpoint.worktreePath, "README.md"), "proposal title\n", "utf8");

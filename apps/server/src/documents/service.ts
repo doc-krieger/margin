@@ -147,15 +147,20 @@ export class DocumentService {
   }
 
   private async readSnapshot(requestedPath: string, filePath: string): Promise<DocumentSnapshot> {
+    let bytes: Buffer;
+    let stats: Awaited<ReturnType<typeof lstat>>;
     try {
-      const [content, stats] = await Promise.all([readFile(filePath, "utf8"), lstat(filePath)]);
-      return { path: requestedPath, content, hash: hashContent(content), sizeBytes: stats.size, modifiedAt: stats.mtime.toISOString() };
+      [bytes, stats] = await Promise.all([readFile(filePath), lstat(filePath)]);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ERR_INVALID_ARG_VALUE") {
-        throw new DocumentError("DOCUMENT_NOT_TEXT", "Document is not valid UTF-8 text", undefined, { cause: error });
-      }
       throw new DocumentError("DOCUMENT_NOT_FOUND", "Unable to read document", undefined, { cause: error });
     }
+    let content: string;
+    try {
+      content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch (error) {
+      throw new DocumentError("DOCUMENT_NOT_TEXT", "Document is not valid UTF-8 text", { path: requestedPath }, { cause: error });
+    }
+    return { path: requestedPath, content, hash: hashContent(content), sizeBytes: stats.size, modifiedAt: stats.mtime.toISOString() };
   }
 }
 

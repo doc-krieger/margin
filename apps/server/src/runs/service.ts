@@ -5,6 +5,7 @@ import { runCommand, type CommandResult } from "../process/command.js";
 import { GitCheckpointService, type GitCheckpoint } from "../git/checkpoint.js";
 import { runPiProcess, PiProcessError, type PiRunInput, type PiRunResult } from "../pi/adapter.js";
 import { defaultPiProfileManifest, parsePiProfileManifest, type PiProfileManifest } from "../pi/manifest.js";
+import { ProposalService } from "../proposals/service.js";
 import {
   isTerminalRunStatus,
   makeRunEvent,
@@ -47,6 +48,15 @@ export interface RunCommandRunner {
   run(executable: string, args: string[], options?: { cwd?: string; timeoutMs?: number; signal?: AbortSignal }): Promise<CommandResult>;
 }
 
+export interface RunProposalCreator {
+  createFromRun(input: {
+    runId: string;
+    repositoryRoot: string;
+    checkpoint: { sha: string; ref: string; worktreePath: string };
+    cleanup?: () => Promise<void>;
+  }): Promise<{ proposalId: string }>;
+}
+
 export interface RevisionRunServiceOptions {
   profiles?: PiProfile[];
   eventStore?: RunEventStore;
@@ -54,6 +64,7 @@ export interface RevisionRunServiceOptions {
   checkpointService?: CheckpointCreator;
   piExecutor?: PiExecutor;
   commandRunner?: RunCommandRunner;
+  proposalService?: RunProposalCreator;
   dataDirectory?: string;
   clock?: RunClock;
 }
@@ -118,6 +129,7 @@ function initialRecord(input: StartRevisionRunOptions, runId: string, correlatio
     endedAt: null,
     durationMs: null,
     checkpoint: null,
+    proposalId: null,
     manifest: null,
     changedFiles: [],
     diagnostics: null,
@@ -164,6 +176,7 @@ export class RevisionRunService {
   private readonly checkpointService: CheckpointCreator;
   private readonly piExecutor: PiExecutor;
   private readonly commandRunner: RunCommandRunner;
+  private readonly proposalService: RunProposalCreator;
   private readonly clock: RunClock;
 
   constructor(options: RevisionRunServiceOptions = {}) {
@@ -178,6 +191,7 @@ export class RevisionRunService {
     this.checkpointService = options.checkpointService ?? new GitCheckpointService();
     this.piExecutor = options.piExecutor ?? { run: runPiProcess };
     this.commandRunner = options.commandRunner ?? { run: runCommand };
+    this.proposalService = options.proposalService ?? new ProposalService({ dataDirectory: path.join(dataDirectory, "proposals") });
     const configuredProfiles = options.profiles ?? [{ id: "default", label: "Pi", status: "available" as const, manifest: defaultPiProfileManifest() }];
     for (const profile of configuredProfiles) {
       const manifest = parsePiProfileManifest(profile.manifest);
@@ -204,8 +218,14 @@ export class RevisionRunService {
     return this.recordStore.list(projectId);
   }
 
+  async recordProposalCleanup(runId: string, cleanup: RevisionRunRecord["cleanup"]): Promise<RevisionRunRecord> {
+    const record = await this.get(runId);
+    return this.save({ ...record, cleanup });
+  }
+
   async events(runId: string, after = -1): Promise<RunEvent[]> {
-    await this.get(runId);
+    const record = await this.get(runId);
+    await this.ensureTerminalEvent(record);
     return (await this.eventStore.list(runId)).filter((event) => event.sequence > after);
   }
 
@@ -273,6 +293,17 @@ export class RevisionRunService {
     return event;
   }
 
+  private async ensureTerminalEvent(record: RevisionRunRecord): Promise<void> {
+    if (!isTerminalRunStatus(record.status)) return;
+    const events = await this.eventStore.list(record.runId);
+    if (events.some((event) => event.type === "run.completed" || event.type === "run.failed" || event.type === "run.cancelled")) return;
+    if (record.status === "completed") {
+      await this.emit(record, "run.completed", { changedFiles: record.changedFiles, durationMs: record.durationMs, proposalId: record.proposalId });
+    } else {
+      await this.emit(record, record.status === "cancelled" ? "run.cancelled" : "run.failed", { code: record.errorCode, diagnostics: record.diagnostics });
+    }
+  }
+
   private async save(record: RevisionRunRecord): Promise<RevisionRunRecord> {
     const parsed = revisionRunRecordSchema.parse(record);
     await this.recordStore.save(parsed);
@@ -299,6 +330,8 @@ export class RevisionRunService {
     const startedAtMs = this.clock().getTime();
     let record = initial;
     let checkpoint: GitCheckpoint | undefined;
+    let checkpointTransferred = false;
+    let transferredProposalId: string | null = null;
     try {
       await this.emit(record, "run.started", { status: "checkpointing", profileId: profile.id });
       record = await this.save({ ...record, status: "checkpointing", startedAt: now(this.clock) });
@@ -351,41 +384,70 @@ export class RevisionRunService {
       } as PiRunInput, this.executorEventStore);
       await this.assertCanonicalUntouched(input.repositoryRoot);
       const changedFiles = await this.diffWorktree(checkpoint);
-      const endedAt = now(this.clock);
-      record = await this.save({ ...record, status: "completed", endedAt, durationMs: Math.max(0, this.clock().getTime() - startedAtMs), changedFiles });
-      const terminalEvents = await this.eventStore.list(record.runId);
-      if (!terminalEvents.some((event) => event.type === "run.completed")) await this.emit(record, "run.completed", { changedFiles, durationMs: record.durationMs });
-    } catch (error) {
-      const cancelled = isCancellation(error, signal);
-      const details = errorDetails(error);
-      const status: RunStatus = cancelled ? "cancelled" : "failed";
-      const endedAt = now(this.clock);
-      record = await this.save({
-        ...record,
-        status,
-        endedAt,
-        durationMs: Math.max(0, this.clock().getTime() - startedAtMs),
-        errorCode: cancelled ? "PI_CANCELLED" : details.code,
-        diagnostics: details.diagnostics,
+      const proposal = await this.proposalService.createFromRun({
+        runId: record.runId,
+        repositoryRoot: input.repositoryRoot,
+        checkpoint: { sha: checkpoint.checkpointSha, ref: checkpoint.checkpointRef, worktreePath: checkpoint.worktreePath },
+        cleanup: checkpoint.cleanup,
       });
-      const events = await this.eventStore.list(record.runId);
-      const terminalType = cancelled ? "run.cancelled" : "run.failed";
-      if (!events.some((event) => event.type === "run.cancelled" || event.type === "run.failed")) {
-        await this.emit(record, terminalType, { code: record.errorCode, diagnostics: record.diagnostics });
-      }
-    } finally {
-      const cleanupStartedAt = now(this.clock);
-      record = await this.save({ ...record, cleanup: { ...record.cleanup, status: "pending", startedAt: cleanupStartedAt } });
-      if (checkpoint) {
-        try {
-          await checkpoint.cleanup();
-          record = await this.save({ ...record, cleanup: { status: "completed", startedAt: cleanupStartedAt, endedAt: now(this.clock), diagnostics: null } });
-        } catch (error) {
-          const diagnostics = bounded(error instanceof Error ? error.stack ?? error.message : String(error));
-          record = await this.save({ ...record, cleanup: { status: "failed", startedAt: cleanupStartedAt, endedAt: now(this.clock), diagnostics }, diagnostics: bounded([record.diagnostics, `cleanup: ${diagnostics}`].filter(Boolean).join("\n")) });
+      checkpointTransferred = true;
+      transferredProposalId = proposal.proposalId;
+      const endedAt = now(this.clock);
+      record = await this.save({ ...record, status: "completed", endedAt, durationMs: Math.max(0, this.clock().getTime() - startedAtMs), changedFiles, proposalId: proposal.proposalId });
+      const terminalEvents = await this.eventStore.list(record.runId);
+      if (!terminalEvents.some((event) => event.type === "run.completed")) await this.emit(record, "run.completed", { changedFiles, durationMs: record.durationMs, proposalId: proposal.proposalId });
+    } catch (error) {
+      const details = errorDetails(error);
+      const endedAt = now(this.clock);
+      if (checkpointTransferred) {
+        // Proposal creation durably transferred ownership of the checkpoint.
+        // Preserve that successful linkage even if later run persistence or
+        // terminal event emission failed; never downgrade and orphan it.
+        record = await this.save({
+          ...record,
+          status: "completed",
+          proposalId: transferredProposalId,
+          endedAt,
+          durationMs: Math.max(0, this.clock().getTime() - startedAtMs),
+          errorCode: null,
+          diagnostics: bounded([record.diagnostics, `completion persistence: ${details.diagnostics}`].filter(Boolean).join("\n")),
+        });
+        const terminalEvents = await this.eventStore.list(record.runId);
+        if (!terminalEvents.some((event) => event.type === "run.completed")) {
+          await this.emit(record, "run.completed", { changedFiles: record.changedFiles, durationMs: record.durationMs, proposalId: record.proposalId });
         }
       } else {
-        record = await this.save({ ...record, cleanup: { status: "completed", startedAt: cleanupStartedAt, endedAt: now(this.clock), diagnostics: null } });
+        const cancelled = isCancellation(error, signal);
+        const status: RunStatus = cancelled ? "cancelled" : "failed";
+        record = await this.save({
+          ...record,
+          status,
+          endedAt,
+          durationMs: Math.max(0, this.clock().getTime() - startedAtMs),
+          errorCode: cancelled ? "PI_CANCELLED" : details.code,
+          diagnostics: details.diagnostics,
+        });
+        const events = await this.eventStore.list(record.runId);
+        const terminalType = cancelled ? "run.cancelled" : "run.failed";
+        if (!events.some((event) => event.type === "run.cancelled" || event.type === "run.failed")) {
+          await this.emit(record, terminalType, { code: record.errorCode, diagnostics: record.diagnostics });
+        }
+      }
+    } finally {
+      if (!checkpointTransferred) {
+        const cleanupStartedAt = now(this.clock);
+        record = await this.save({ ...record, cleanup: { ...record.cleanup, status: "pending", startedAt: cleanupStartedAt } });
+        if (checkpoint) {
+          try {
+            await checkpoint.cleanup();
+            record = await this.save({ ...record, cleanup: { status: "completed", startedAt: cleanupStartedAt, endedAt: now(this.clock), diagnostics: null } });
+          } catch (error) {
+            const diagnostics = bounded(error instanceof Error ? error.stack ?? error.message : String(error));
+            record = await this.save({ ...record, cleanup: { status: "failed", startedAt: cleanupStartedAt, endedAt: now(this.clock), diagnostics }, diagnostics: bounded([record.diagnostics, `cleanup: ${diagnostics}`].filter(Boolean).join("\n")) });
+          }
+        } else {
+          record = await this.save({ ...record, cleanup: { status: "completed", startedAt: cleanupStartedAt, endedAt: now(this.clock), diagnostics: null } });
+        }
       }
     }
     return record;

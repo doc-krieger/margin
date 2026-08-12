@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CommentAuthorizationError, CommentRepository, InvalidCommentTransitionError } from "../../apps/server/src/comments/repository.js";
+import { CommentAuthorizationError, CommentNotFoundError, CommentRepository, InvalidCommentTransitionError } from "../../apps/server/src/comments/repository.js";
 import { createTextAnchor, reanchorTextAnchor } from "../../apps/server/src/comments/anchors.js";
 
 const projectId = "project-comments";
@@ -132,6 +132,16 @@ describe("comment repository", () => {
     expect(() => repository.transition(comment.id, "resolved", { actor: "automation" })).toThrow(CommentAuthorizationError);
     expect(repository.transition(comment.id, "resolved", { actor: "user" }).state).toBe("resolved");
     expect(() => repository.transition(comment.id, "open", { actor: "user" })).toThrow(InvalidCommentTransitionError);
+    repository.close();
+  });
+
+  it("requires project scope when retrieving a comment for mutation", () => {
+    const repository = new CommentRepository();
+    const comment = repository.createDocumentComment({ projectId, documentPath: "notes.md", body: "Scoped feedback" });
+
+    expect(repository.requireForProject(projectId, comment.id).id).toBe(comment.id);
+    expect(() => repository.requireForProject("another-project", comment.id)).toThrow(CommentNotFoundError);
+    expect(repository.require(comment.id).body).toBe("Scoped feedback");
     repository.close();
   });
 

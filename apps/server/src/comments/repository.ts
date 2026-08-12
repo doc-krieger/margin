@@ -278,6 +278,12 @@ export class CommentRepository {
     return comment;
   }
 
+  requireForProject(projectId: string, id: string): CommentRecord {
+    const row = this.database.prepare("SELECT * FROM comments WHERE project_id = ? AND id = ?").get(projectId, id) as CommentRow | undefined;
+    if (!row) throw new CommentNotFoundError(id);
+    return commentFromRow(row);
+  }
+
   list(filter: CommentListFilter): CommentRecord[] {
     const clauses = ["project_id = ?"];
     const values: Array<string> = [filter.projectId];

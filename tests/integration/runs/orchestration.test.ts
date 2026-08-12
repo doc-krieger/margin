@@ -3,13 +3,25 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { makeRunEvent, type CommentRecord } from "../../../packages/shared/src/index.js";
+import { makeRunEvent, type CommentRecord, type RunEvent } from "../../../packages/shared/src/index.js";
 import { MemoryRunEventStore } from "../../../apps/server/src/runs/events.js";
-import { MemoryRunRecordStore } from "../../../apps/server/src/runs/store.js";
+import { FileRunRecordStore, MemoryRunRecordStore } from "../../../apps/server/src/runs/store.js";
 import { PiProcessError, type PiRunInput } from "../../../apps/server/src/pi/adapter.js";
 import { RevisionRunService, type PiProfile, type RunCommandRunner } from "../../../apps/server/src/runs/service.js";
 import type { GitCheckpoint } from "../../../apps/server/src/git/checkpoint.js";
 import type { CommandResult } from "../../../apps/server/src/process/command.js";
+
+class FlakyTerminalEventStore extends MemoryRunEventStore {
+  private failedOnce = false;
+
+  override async append(event: RunEvent): Promise<void> {
+    if (event.type === "run.completed" && !this.failedOnce) {
+      this.failedOnce = true;
+      throw new Error("terminal event persistence failed once");
+    }
+    await super.append(event);
+  }
+}
 
 const profile: PiProfile = {
   id: "fixture",
@@ -75,6 +87,7 @@ function baseOptions(root: string, piExecutor: RevisionRunServiceOptionsPi): Con
     checkpointService: { create: async () => fakeCheckpoint(root, piExecutor.cleanupFailure) },
     piExecutor: piExecutor.executor,
     commandRunner: fakeCommandRunner(root),
+    proposalService: { createFromRun: async ({ runId }) => ({ proposalId: `proposal-${runId}` }) },
   };
 }
 
@@ -84,6 +97,32 @@ type RevisionRunServiceOptionsPi = {
 };
 
 describe("isolated revision run orchestration", () => {
+  it("loads legacy persisted records that predate proposal linkage", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "margin-run-records-"));
+    const runId = "legacy-run";
+    await writeFile(path.join(directory, `${runId}.json`), JSON.stringify({
+      runId,
+      correlationId: randomUUID(),
+      projectId: "legacy-project",
+      repositoryRoot: directory,
+      profileId: "fixture",
+      status: "completed",
+      createdAt: new Date().toISOString(),
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      durationMs: 1,
+      checkpoint: null,
+      manifest: null,
+      changedFiles: [],
+      diagnostics: null,
+      errorCode: null,
+      cleanup: { status: "completed", startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), diagnostics: null },
+    }));
+
+    await expect(new FileRunRecordStore(directory).get(runId)).resolves.toMatchObject({ runId, proposalId: null });
+    await rm(directory, { recursive: true, force: true });
+  });
+
   it("scopes the instruction manifest and persists checkpoint, events, changed files, and cleanup without touching canonical files", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "margin-fixture-project-"));
     const canonical = "canonical fixture\n";
@@ -119,9 +158,10 @@ describe("isolated revision run orchestration", () => {
       { path: "proposal.md", status: "untracked" },
       { path: "README.md", status: "modified" },
     ]);
-    expect(final.cleanup.status).toBe("completed");
+    expect(final.proposalId).toBe(`proposal-${final.runId}`);
+    expect(final.cleanup.status).toBe("pending");
     expect(await readFile(path.join(root, "README.md"), "utf8")).toBe(canonical);
-    await expect(access(final.checkpoint!.worktreePath)).rejects.toThrow();
+    await expect(access(final.checkpoint!.worktreePath)).resolves.toBeUndefined();
 
     const promptManifest = JSON.parse(prompt.split("\n").at(-1)!);
     expect(promptManifest.comments.map((item: { id: string }) => item.id)).toEqual(["comment-1"]);
@@ -130,6 +170,28 @@ describe("isolated revision run orchestration", () => {
     expect(events[0].type).toBe("run.started");
     expect(events.at(-1)?.type).toBe("run.completed");
     expect((await service.events(initial.runId, 0)).every((event) => event.sequence > 0)).toBe(true);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("reconciles missing terminal event evidence after a transient append failure", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "margin-fixture-project-"));
+    await writeFile(path.join(root, "README.md"), "canonical\n", "utf8");
+    const options = baseOptions(root, {
+      executor: {
+        run: async (_manifest, input) => {
+          await writeFile(path.join(input.cwd, "proposal.md"), "proposal\n", "utf8");
+          return { runId: input.runId, correlationId: input.correlationId, exitCode: 0, events: [], durationMs: 1 };
+        },
+      },
+    });
+    options.eventStore = new FlakyTerminalEventStore();
+    const service = new RevisionRunService(options);
+    const started = await service.start({ projectId: "project-1", repositoryRoot: root, profileId: "fixture", selectedCommentIds: ["comment-1"], comments: [comment("comment-1", "Revise")] });
+    const completed = await service.waitForCompletion(started.runId);
+
+    expect(completed.status).toBe("completed");
+    expect((await service.events(started.runId)).at(-1)?.type).toBe("run.completed");
+    await rm(root, { recursive: true, force: true });
   });
 
   it("fails schema-invalid selections before creating a checkpoint", async () => {
