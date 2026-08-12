@@ -1,0 +1,42 @@
+{
+  "name": "margin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "node scripts/run-tests.mjs",
+    "test:browser": "vitest run tests/browser",
+    "test:integration": "vitest run tests/integration",
+    "acceptance:local": "node scripts/acceptance/local.mjs",
+    "typecheck": "tsc -b",
+    "build": "npm run build:web && npm run build:server",
+    "build:web": "vite build --config apps/web/vite.config.ts",
+    "build:server": "tsc -p apps/server/tsconfig.json",
+    "dev:web": "vite --config apps/web/vite.config.ts",
+    "dev:server": "tsx --tsconfig apps/server/tsconfig.json apps/server/src/index.ts",
+    "preflight:pi": "tsx scripts/preflight-pi.ts",
+    "db:generate": "drizzle-kit generate --config drizzle/drizzle.config.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.2",
+    "@fastify/sensible": "^6.0.3",
+    "@tiptap/pm": "^2.11.5",
+    "@tiptap/react": "^2.11.5",
+    "drizzle-orm": "^0.38.3",
+    "fastify": "^5.2.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "drizzle-kit": "^0.30.2",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "vite": "^6.1.0",
+    "vitest": "^3.0.5"
+  }
+}

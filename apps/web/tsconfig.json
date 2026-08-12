@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "composite": true, "module": "ESNext", "moduleResolution": "Bundler", "target": "ES2022",
+    "strict": true, "jsx": "react-jsx", "skipLibCheck": true, "outDir": "dist",
+    "baseUrl": ".", "paths": { "@margin/shared": ["../../packages/shared/dist/src/index.d.ts"], "@margin/shared/*": ["../../packages/shared/dist/src/*"] }
+  },
+  "references": [{ "path": "../../packages/shared/tsconfig.json" }],
+  "include": ["src", "vite.config.ts"]
+}
