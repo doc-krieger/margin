@@ -82,4 +82,3 @@ export class MemoryRunEventStore implements RunEventStore {
     return [...(this.events.get(runId) ?? [])];
   }
 }
-
