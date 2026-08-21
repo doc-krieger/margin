@@ -1,0 +1,80 @@
+{
+  "entries": [
+    {
+      "id": 1,
+      "tool": "browser_navigate",
+      "status": "success",
+      "durationMs": 1856,
+      "beforeUrl": "about:blank",
+      "afterUrl": "http://127.0.0.1:5174/",
+      "line": "#1 | browser_navigate | success | 1856ms | url=\"http://127.0.0.1:5174/\", screenshot=false | URL changed to http://127.0.0.1:5174/; title changed to Margin; landmarks 0→3; buttons 0→4"
+    },
+    {
+      "id": 2,
+      "tool": "browser_analyze_form",
+      "status": "success",
+      "durationMs": 230,
+      "beforeUrl": "http://127.0.0.1:5174/",
+      "afterUrl": "http://127.0.0.1:5174/",
+      "line": "#2 | browser_analyze_form | success | 230ms"
+    },
+    {
+      "id": 3,
+      "tool": "browser_batch",
+      "status": "success",
+      "durationMs": 1713,
+      "beforeUrl": "http://127.0.0.1:5174/",
+      "afterUrl": "http://127.0.0.1:5174/",
+      "line": "#3 | browser_batch | success | 1713ms | steps=[4], stopOnFailure=true, finalSummaryOnly=false | focus changed; visible text changed"
+    },
+    {
+      "id": 4,
+      "tool": "browser_batch",
+      "status": "error",
+      "durationMs": 11183,
+      "beforeUrl": "http://127.0.0.1:5174/",
+      "afterUrl": "http://127.0.0.1:5174/",
+      "line": "#4 | browser_batch | error | 11183ms | steps=[4], stopOnFailure=true, finalSummaryOnly=false | Stopped at step 3 (wait_for) | focus changed; visible text changed"
+    },
+    {
+      "id": 5,
+      "tool": "browser_batch",
+      "status": "error",
+      "durationMs": 11356,
+      "beforeUrl": "http://127.0.0.1:5174/",
+      "afterUrl": "http://127.0.0.1:5174/",
+      "line": "#5 | browser_batch | error | 11356ms | steps=[5], stopOnFailure=true, finalSummaryOnly=false | Stopped at step 4 (wait_for) | No meaningful browser-state change detected"
+    },
+    {
+      "id": 6,
+      "tool": "browser_batch",
+      "status": "error",
+      "durationMs": 11925,
+      "beforeUrl": "http://127.0.0.1:5174/",
+      "afterUrl": "http://127.0.0.1:5174/",
+      "line": "#6 | browser_batch | error | 11925ms | steps=[6], stopOnFailure=true, finalSummaryOnly=false | Stopped at step 5 (wait_for) | No meaningful browser-state change detected"
+    },
+    {
+      "id": 7,
+      "tool": "browser_batch",
+      "status": "error",
+      "durationMs": 11434,
+      "beforeUrl": "http://127.0.0.1:5174/",
+      "afterUrl": "http://127.0.0.1:5174/",
+      "line": "#7 | browser_batch | error | 11434ms | steps=[5], stopOnFailure=true, finalSummaryOnly=false | Stopped at step 4 (wait_for) | landmarks 3→4; buttons 4→6; visible text changed"
+    },
+    {
+      "id": 8,
+      "tool": "browser_batch",
+      "status": "success",
+      "durationMs": 1346,
+      "beforeUrl": "http://127.0.0.1:5174/",
+      "afterUrl": "http://127.0.0.1:5174/",
+      "line": "#8 | browser_batch | success | 1346ms | steps=[3], stopOnFailure=true, finalSummaryOnly=false | landmarks 4→26; buttons 6→28; links 0→1; inputs 3→12"
+    }
+  ],
+  "retained": 8,
+  "totalRecorded": 8,
+  "bounded": false,
+  "summary": "Timeline: 8 browser actions recorded."
+}

@@ -25,6 +25,9 @@ export interface ProposalRecord {
   runId: string;
   repositoryRoot: string;
   checkpoint: ProposalCheckpoint;
+  /** Optional research metadata; revision-run proposals do not need these fields. */
+  ignoredPaths?: string[];
+  metadata?: Record<string, unknown>;
   status: ProposalStatus;
   decision: ProposalDecision | null;
   diff: GitProposalDiff;

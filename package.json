@@ -8,6 +8,7 @@
     "test:browser": "vitest run tests/browser",
     "test:integration": "vitest run tests/integration",
     "acceptance:local": "node scripts/acceptance/local.mjs",
+    "acceptance:research-lineage": "tsx scripts/acceptance-research-lineage-pi.ts --required",
     "typecheck": "tsc -b",
     "build": "npm run build:web && npm run build:server",
     "build:web": "vite build --config apps/web/vite.config.ts",
@@ -24,8 +25,10 @@
     "@tiptap/react": "^2.11.5",
     "drizzle-orm": "^0.38.3",
     "fastify": "^5.2.1",
+    "proper-lockfile": "^4.1.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "yaml": "^2.9.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {

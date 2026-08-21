@@ -27,7 +27,7 @@ const profile: PiProfile = {
   id: "fixture",
   label: "Fixture Pi",
   status: "available",
-  manifest: { command: "fixture-pi", versionArgs: [], runArgs: [], protocol: "jsonl", timeoutMs: 5_000 },
+  manifest: { command: "fixture-pi", versionArgs: [], runArgs: [], protocol: "rpc", timeoutMs: 5_000 },
 };
 
 function comment(id: string, body: string, projectId = "project-1"): CommentRecord {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ProjectApiClient, type EventSourceLike } from "../../../apps/web/src/projects/api.js";
 
-const manifest = { command: "pi", versionArgs: ["--version"], runArgs: ["--mode", "json"], protocol: "jsonl" as const, timeoutMs: 120_000 };
+const manifest = { command: "pi", versionArgs: ["--version"], runArgs: ["--mode", "rpc"], protocol: "rpc" as const, timeoutMs: 120_000 };
 
 function runRecord(overrides: Record<string, unknown> = {}) {
   return {

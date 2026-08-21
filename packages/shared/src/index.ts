@@ -14,9 +14,14 @@ export const apiErrorSchema = z.object({
 export type ProjectRootRequest = z.infer<typeof projectRootRequestSchema>;
 export type ApiError = z.infer<typeof apiErrorSchema>;
 
+export * from "./sources/index.js";
+export * from "./quality/index.js";
+
 export const healthResponseSchema = z.object({ ok: z.literal(true), service: z.literal("margin-api"), correlationId: correlationIdSchema });
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 
 export * from "./comments/index.js";
 export * from "./runs/contracts.js";
+export * from "./research/index.js";
+export * from "./lineage/contracts.js";
 export * from "./markdown/index.js";

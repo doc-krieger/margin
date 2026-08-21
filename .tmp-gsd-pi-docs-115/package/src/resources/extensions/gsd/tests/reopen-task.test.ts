@@ -1,0 +1,271 @@
+// GSD — reopen-task handler tests
+// Copyright (c) 2026 Jeremy McSpadden <jeremy@fluxlabs.net>
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+
+import {
+  _getAdapter,
+  openDatabase,
+  closeDatabase,
+  insertMilestone,
+  insertSlice,
+  insertTask,
+  getTask,
+} from '../gsd-db.ts';
+import { executeDomainOperation } from '../db/domain-operation.ts';
+import {
+  adoptOrTransitionLifecycle,
+  readDomainOperationFence,
+} from '../db/writers/lifecycle-commands.ts';
+import { handleReopenTask } from '../tools/reopen-task.ts';
+import { internalExecutionInvocation } from '../execution-invocation.ts';
+
+function invocation(key = 'test/public-reopen'): ReturnType<typeof internalExecutionInvocation> {
+  return internalExecutionInvocation(key);
+}
+
+function makeTmpBase(): string {
+  const base = mkdtempSync(join(tmpdir(), 'gsd-reopen-task-'));
+  mkdirSync(join(base, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'tasks'), { recursive: true });
+  return base;
+}
+
+function cleanup(base: string): void {
+  try { closeDatabase(); } catch { /* noop */ }
+  try { rmSync(base, { recursive: true, force: true }); } catch { /* noop */ }
+}
+
+function seedCompleteTask(): void {
+  insertMilestone({ id: 'M001', title: 'Test Milestone', status: 'active' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice', status: 'in_progress' });
+  insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Task One', status: 'complete' });
+  insertTask({ id: 'T02', sliceId: 'S01', milestoneId: 'M001', title: 'Task Two', status: 'pending' });
+}
+
+function adoptCompletedLifecycle(): string {
+  const fence = readDomainOperationFence();
+  let lifecycleId = '';
+  executeDomainOperation({
+    operationType: 'test.task.completed',
+    idempotencyKey: 'fixture/public-reopen/completed',
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: 'test',
+    sourceTransport: 'test',
+    payload: { taskId: 'T01' },
+  }, (context) => {
+    lifecycleId = adoptOrTransitionLifecycle(context, {
+      itemKind: 'task',
+      milestoneId: 'M001',
+      sliceId: 'S01',
+      taskId: 'T01',
+      lifecycleStatus: 'completed',
+    }).lifecycleId;
+    return {
+      events: [{ eventType: 'test.task.completed', entityType: 'task', entityId: 'M001/S01/T01', payload: {}, destinations: ['test'] }],
+      projections: [{ projectionKey: 'test/public-reopen/completed', projectionKind: 'test', rendererVersion: '1' }],
+    };
+  });
+  return lifecycleId;
+}
+
+// ─── Success path ────────────────────────────────────────────────────────
+
+test('handleReopenTask: resets a complete task to pending', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  try {
+    seedCompleteTask();
+
+    const result = await handleReopenTask({
+      milestoneId: 'M001',
+      sliceId: 'S01',
+      taskId: 'T01',
+      reason: 'verification failed after merge',
+    }, base, invocation());
+
+    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+    assert.equal(result.taskId, 'T01');
+
+    const task = getTask('M001', 'S01', 'T01');
+    assert.ok(task, 'task should still exist');
+    assert.equal(task!.status, 'pending', 'task status should be reset to pending');
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handleReopenTask: commits canonical ready with legacy pending', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  try {
+    seedCompleteTask();
+    const lifecycleId = adoptCompletedLifecycle();
+
+    const result = await handleReopenTask({
+      milestoneId: 'M001', sliceId: 'S01', taskId: 'T01', reason: 'regression found',
+    }, base, invocation());
+
+    assert.ok(!('error' in result));
+    const adapter = _getAdapter();
+    assert.ok(adapter);
+    assert.deepEqual(adapter.prepare(`
+      SELECT lifecycle_status FROM workflow_item_lifecycles WHERE lifecycle_id = ?
+    `).get(lifecycleId), { lifecycle_status: 'ready' });
+    assert.equal(getTask('M001', 'S01', 'T01')?.status, 'pending');
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handleReopenTask: restores the slice pending Q8 companion gate', async (t) => {
+  const base = makeTmpBase();
+  t.after(() => cleanup(base));
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  seedCompleteTask();
+
+  const result = await handleReopenTask({
+    milestoneId: 'M001', sliceId: 'S01', taskId: 'T01', reason: 'regression found',
+  }, base, invocation('test/public-reopen/restore-q8'));
+
+  assert.ok(!('error' in result));
+  const adapter = _getAdapter();
+  assert.ok(adapter);
+  assert.deepEqual(adapter.prepare(`
+    SELECT gate_id, scope, status
+    FROM quality_gates
+    WHERE milestone_id = 'M001' AND slice_id = 'S01'
+      AND gate_id = 'Q8' AND (task_id = '' OR task_id IS NULL)
+  `).all(), [{ gate_id: 'Q8', scope: 'slice', status: 'pending' }]);
+});
+
+test('handleReopenTask: projection cleanup failure cannot roll back committed recovery', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  try {
+    seedCompleteTask();
+    const lifecycleId = adoptCompletedLifecycle();
+    mkdirSync(join(base, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'tasks', 'T01-SUMMARY.md'));
+
+    const result = await handleReopenTask({
+      milestoneId: 'M001', sliceId: 'S01', taskId: 'T01', reason: 'regression found',
+    }, base, invocation());
+
+    assert.ok(!('error' in result));
+    const adapter = _getAdapter();
+    assert.ok(adapter);
+    assert.equal(adapter.prepare(`
+      SELECT lifecycle_status FROM workflow_item_lifecycles WHERE lifecycle_id = ?
+    `).get(lifecycleId)?.lifecycle_status, 'ready');
+    assert.equal(getTask('M001', 'S01', 'T01')?.status, 'pending');
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handleReopenTask: does not affect other tasks in the slice', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  try {
+    seedCompleteTask();
+
+    await handleReopenTask({ milestoneId: 'M001', sliceId: 'S01', taskId: 'T01' }, base, invocation());
+
+    const t02 = getTask('M001', 'S01', 'T02');
+    assert.ok(t02, 'T02 should still exist');
+    assert.equal(t02!.status, 'pending', 'T02 status should be unchanged');
+  } finally {
+    cleanup(base);
+  }
+});
+
+// ─── Failure paths ───────────────────────────────────────────────────────
+
+test('handleReopenTask: rejects empty taskId', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  try {
+    const result = await handleReopenTask({ milestoneId: 'M001', sliceId: 'S01', taskId: '' }, base, invocation());
+    assert.ok('error' in result);
+    assert.match(result.error, /taskId/);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handleReopenTask: rejects non-existent milestone', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  try {
+    const result = await handleReopenTask({ milestoneId: 'M999', sliceId: 'S01', taskId: 'T01' }, base, invocation());
+    assert.ok('error' in result);
+    assert.match(result.error, /milestone not found/);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handleReopenTask: rejects task in a closed milestone', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  try {
+    insertMilestone({ id: 'M001', title: 'Done', status: 'complete' });
+    insertSlice({ id: 'S01', milestoneId: 'M001', status: 'complete' });
+    insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', status: 'complete' });
+
+    const result = await handleReopenTask({ milestoneId: 'M001', sliceId: 'S01', taskId: 'T01' }, base, invocation());
+    assert.ok('error' in result);
+    assert.match(result.error, /closed milestone/);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handleReopenTask: rejects task inside a closed slice', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  try {
+    insertMilestone({ id: 'M001', title: 'Active', status: 'active' });
+    insertSlice({ id: 'S01', milestoneId: 'M001', status: 'complete' });
+    insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', status: 'complete' });
+
+    const result = await handleReopenTask({ milestoneId: 'M001', sliceId: 'S01', taskId: 'T01' }, base, invocation());
+    assert.ok('error' in result);
+    assert.match(result.error, /closed slice/);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handleReopenTask: rejects reopening a task that is not complete', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  try {
+    seedCompleteTask();
+
+    const result = await handleReopenTask({ milestoneId: 'M001', sliceId: 'S01', taskId: 'T02' }, base, invocation());
+    assert.ok('error' in result);
+    assert.match(result.error, /not complete/);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handleReopenTask: rejects non-existent task', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  try {
+    insertMilestone({ id: 'M001', title: 'Active', status: 'active' });
+    insertSlice({ id: 'S01', milestoneId: 'M001', status: 'in_progress' });
+
+    const result = await handleReopenTask({ milestoneId: 'M001', sliceId: 'S01', taskId: 'T99' }, base, invocation());
+    assert.ok('error' in result);
+    assert.match(result.error, /task not found/);
+  } finally {
+    cleanup(base);
+  }
+});

@@ -31,7 +31,7 @@ export const piProfileManifestSchema = z.object({
   command: z.string().trim().min(1).max(512),
   versionArgs: z.array(z.string().max(512)).max(32).default(["--version"]),
   runArgs: z.array(z.string().max(4096)).max(128),
-  protocol: z.literal("jsonl"),
+  protocol: z.literal("rpc"),
   timeoutMs: z.number().int().min(1000).max(15 * 60 * 1000).default(120_000),
 });
 export type PiProfileManifest = z.infer<typeof piProfileManifestSchema>;

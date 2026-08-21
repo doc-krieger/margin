@@ -4,6 +4,7 @@ import { CommentPane, type TextSelection } from "../comments/comment-pane";
 import { RunControlPanel } from "../runs";
 import { ProposalReviewPanel } from "../proposals";
 import { CheckpointHistoryPanel } from "../history";
+import { SourceCapturePanel, SourceDetailPanel } from "../sources";
 import {
   getWorkspaceCapabilities,
   renderMarkdownPreview,
@@ -40,6 +41,7 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient, p
   const [conflict, setConflict] = useState<{ currentHash?: string; message: string }>();
   const [status, setStatus] = useState("Loading documents…");
   const [error, setError] = useState<string>();
+  const [selectedSourceId, setSelectedSourceId] = useState<string>();
 
   useEffect(() => {
     let cancelled = false;
@@ -178,6 +180,10 @@ export function DocumentWorkspace({ project, client = defaultProjectApiClient, p
         <WorkspacePane id="comments" title="Comments" className="workspace__comments">
           {snapshot ? <CommentPane projectId={project.id} documentPath={snapshot.path} documentText={draft} selection={selection} refreshKey={snapshot.hash} focusSelectionRequest={commentScopeRequest} client={client} /> : <p className="workspace__status">Open a document to review comments.</p>}
         </WorkspacePane>
+        <section className="workspace__sources" data-testid="workspace-sources" aria-label="Source capture and provenance">
+          <SourceCapturePanel projectId={project.id} onSourceSelected={setSelectedSourceId} />
+          <SourceDetailPanel projectId={project.id} sourceId={selectedSourceId} />
+        </section>
         {capabilities.canRun && <WorkspacePane id="runs" title="Runs and proposal review" className="workspace__runs">
           <RunControlPanel projectId={project.id} client={client} resumeLatest />
           {proposalId ? <ProposalReviewPanel projectId={project.id} proposalId={proposalId} /> : null}

@@ -1,0 +1,67 @@
+// Project/App: gsd-pi
+// File Purpose: ADR-017 #5707 caller-closure helper. Parent processes that
+// spawn auto-loop workers must reconcile before spawn — otherwise each
+// worker independently detects+repairs the same drift, racing on shared
+// state. This helper centralises the reconcile+catch flow so the two
+// production spawn sites (commands/handlers/parallel.ts and auto/phases.ts
+// startSliceParallel) share one contract.
+
+import {
+  reconcileBeforeDispatch,
+  ReconciliationFailedError,
+  type ReconciliationDeps,
+} from "./index.js";
+import { preserveProjectionChanges } from "../projection-worker.js";
+
+export type SpawnGateResult =
+  | { ok: true; reason?: string }
+  | { ok: false; reason: string };
+
+export interface SpawnGateDeps extends Partial<ReconciliationDeps> {
+  reconcile?: typeof reconcileBeforeDispatch;
+}
+
+/**
+ * Run reconciliation before spawning workers. Returns ok=true only when the run
+ * completed without throwing AND surfaced no blockers; any blocker fails the
+ * gate (ok=false, reason carries the first blocker) so callers must not spawn.
+ * On ReconciliationFailedError, returns ok=false with the error message so the
+ * caller can surface it to the user without re-throwing.
+ *
+ * Other unexpected errors propagate; they are not part of the drift
+ * taxonomy.
+ */
+export async function reconcileBeforeSpawn(
+  basePath: string,
+  deps: SpawnGateDeps = {},
+): Promise<SpawnGateResult> {
+  const { reconcile, ...reconcileDeps } = deps;
+  const reconcileFn = reconcile ?? reconcileBeforeDispatch;
+  const hasReconcileDeps = Object.keys(reconcileDeps).length > 0;
+  try {
+    await preserveProjectionChanges(basePath);
+    const result = await reconcileFn(
+      basePath,
+      hasReconcileDeps ? (reconcileDeps as ReconciliationDeps) : undefined,
+    );
+    if (result.blockers.length > 0) {
+      return {
+        ok: false,
+        reason: `Reconciliation blocker: ${result.blockers[0]}`,
+      };
+    }
+    const repairedKinds = result.repaired.map((d) => d.kind);
+    return {
+      ok: true,
+      reason:
+        repairedKinds.length > 0
+          ? `repaired before spawn: ${repairedKinds.join(", ")}`
+          : undefined,
+    };
+  } catch (err) {
+    if (err instanceof ReconciliationFailedError) {
+      return { ok: false, reason: err.message };
+    }
+    throw err;
+  }
+}

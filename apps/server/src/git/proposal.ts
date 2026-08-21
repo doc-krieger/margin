@@ -13,6 +13,8 @@ export interface GitProposalWorkspaceInput {
   worktreePath: string;
   checkpointSha: string;
   checkpointRef?: string;
+  /** Private worktree paths are reviewable by the executor but never applied canonically. */
+  ignoredPaths?: string[];
 }
 
 export interface GitProposalFileDiff extends ChangedFile {
@@ -148,7 +150,11 @@ function unifiedUntrackedPatch(relativePath: string, bytes: Buffer): string {
   return `${header}--- /dev/null\n+++ b/${relativePath}\n@@ -0,0 +1,${lines.length} @@\n${body}${newline}${hasTrailingNewline ? "" : "\\ No newline at end of file\n"}`;
 }
 
-async function listRegularFiles(root: string): Promise<string[]> {
+function isIgnoredPath(relativePath: string, ignoredPaths: string[] = []): boolean {
+  return ignoredPaths.some((ignored) => relativePath === ignored || relativePath.startsWith(`${ignored}/`));
+}
+
+async function listRegularFiles(root: string, ignoredPaths: string[] = []): Promise<string[]> {
   const result: string[] = [];
   async function walk(directory: string, relativeDirectory: string): Promise<void> {
     const entries = await readdir(directory, { withFileTypes: true });
@@ -156,6 +162,7 @@ async function listRegularFiles(root: string): Promise<string[]> {
       if (entry.name === "." || entry.name === ".." || entry.name === ".git") continue;
       const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
       normalizeRelativePath(relativePath);
+      if (isIgnoredPath(relativePath, ignoredPaths)) continue;
       const absolutePath = path.join(directory, entry.name);
       const stats = await lstat(absolutePath);
       if (stats.isSymbolicLink()) {
@@ -175,7 +182,7 @@ async function listRegularFiles(root: string): Promise<string[]> {
 
 async function trackedFiles(runner: GitProposalCommandRunner, input: GitProposalWorkspaceInput): Promise<string[]> {
   const result = await runner.run("git", ["-C", input.worktreePath, "ls-tree", "-r", "-z", "--name-only", input.checkpointSha], { timeoutMs: 15_000 });
-  return assertCommand(result, "GIT_PROPOSAL_APPLY_FAILED", "Unable to enumerate checkpoint files").split("\0").filter(Boolean).map(normalizeRelativePath);
+  return assertCommand(result, "GIT_PROPOSAL_APPLY_FAILED", "Unable to enumerate checkpoint files").split("\0").filter(Boolean).map(normalizeRelativePath).filter((filePath) => !isIgnoredPath(filePath, input.ignoredPaths));
 }
 
 async function removePath(absolutePath: string): Promise<void> {
@@ -213,7 +220,7 @@ export class GitProposalService {
     const patch = assertCommand(diffResult, "GIT_PROPOSAL_DIFF_FAILED", "Unable to render proposal diff");
     const diffFiles = parseNameStatusZ(assertCommand(nameResult, "GIT_PROPOSAL_DIFF_FAILED", "Unable to inventory proposal diff"));
     const statusFiles = parsePorcelainZ(assertCommand(statusResult, "GIT_PROPOSAL_DIFF_FAILED", "Unable to inventory proposal status"));
-    const files = mergeFiles(diffFiles, statusFiles);
+    const files = mergeFiles(diffFiles, statusFiles).filter((file) => !isIgnoredPath(file.path, normalized.ignoredPaths));
     if (files.length > MAX_PROPOSAL_FILES) throw new GitProposalError("GIT_PROPOSAL_LIMIT_EXCEEDED", `Proposal exceeds the ${MAX_PROPOSAL_FILES}-file review limit`);
     const untrackedPatch: string[] = [];
     for (const file of files.filter((candidate) => candidate.status === "untracked")) {
@@ -279,7 +286,7 @@ export class GitProposalService {
   async apply(input: GitProposalWorkspaceInput): Promise<GitApplyResult> {
     const normalized = await this.normalizeInput(input);
     await this.assertCanonicalAtCheckpoint(normalized);
-    const sourceFiles = await listRegularFiles(normalized.worktreePath);
+    const sourceFiles = await listRegularFiles(normalized.worktreePath, normalized.ignoredPaths);
     const baseFiles = await trackedFiles(this.runner, normalized);
     const sourceSet = new Set(sourceFiles);
     const baseSet = new Set(baseFiles);
@@ -343,7 +350,8 @@ export class GitProposalService {
     if (repositoryRoot === worktreePath || worktreePath.startsWith(`${repositoryRoot}${path.sep}`)) {
       throw new GitProposalError("GIT_PROPOSAL_INVALID", "Proposal worktree must be separate from the canonical repository");
     }
-    return { ...input, repositoryRoot, worktreePath };
+    const ignoredPaths = (input.ignoredPaths ?? []).map((value) => normalizeRelativePath(value));
+    return { ...input, repositoryRoot, worktreePath, ignoredPaths };
   }
 }
 

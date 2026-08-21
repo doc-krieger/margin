@@ -50,7 +50,7 @@ function fakeManifest(...args: string[]) {
     command: process.execPath,
     versionArgs: ["-e", "process.stdout.write('fake-pi 1.0.0\\n')"],
     runArgs: [fakePi, ...args],
-    protocol: "jsonl",
+    protocol: "rpc",
     timeoutMs: 5_000,
   });
 }

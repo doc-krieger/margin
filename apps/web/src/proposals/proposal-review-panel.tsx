@@ -14,11 +14,16 @@ export interface ProposalReviewPanelProps {
   proposalId: string;
   api?: ProposalApiClient;
   initialReview?: ProposalReview;
+  /** Report-led review can gate Keep until citation validation is explicitly valid. */
+  keepDisabled?: boolean;
+  keepDisabledReason?: string;
+  /** Set when this panel was mounted from a post-restart reconstruction. */
+  restoredFromRestart?: boolean;
   onDecided?: (review: ProposalReview) => void;
 }
 
 /** Full-run review surface. All editable content here remains inside the isolated worktree. */
-export function ProposalReviewPanel({ projectId, proposalId, api = defaultProposalApiClient, initialReview, onDecided }: ProposalReviewPanelProps) {
+export function ProposalReviewPanel({ projectId, proposalId, api = defaultProposalApiClient, initialReview, keepDisabled = false, keepDisabledReason, restoredFromRestart = false, onDecided }: ProposalReviewPanelProps) {
   const [review, setReview] = useState<ProposalReview | undefined>(initialReview);
   const [selectedPath, setSelectedPath] = useState(initialReview?.diff.files[0]?.path ?? "");
   const [proposalFile, setProposalFile] = useState<ProposalFile>();
@@ -107,6 +112,10 @@ export function ProposalReviewPanel({ projectId, proposalId, api = defaultPropos
         <StatusBadge status={review.proposal.status} />
       </div>
       <p className="boundary-notice"><strong>Canonical documents are unchanged.</strong> Edits below affect only this isolated proposal until you keep the whole run.</p>
+      <div className="proposal-lineage-context" data-testid="proposal-lineage-context">
+        <span><strong>Lineage checkpoint</strong> {review.proposal.checkpoint.sha.slice(0, 12)} · this isolated decision is recorded after Keep or Reject.</span>
+        <a href="#lineage-workspace">Inspect research lineage</a>
+      </div>
       {error ? <ErrorNotice message={error} /> : null}
       {review.proposal.cleanup.status === "failed" ? <ErrorNotice message={`Proposal cleanup failed. ${review.proposal.cleanup.diagnostics ?? "The isolated worktree remains available for recovery."}`} /> : null}
 
@@ -125,8 +134,9 @@ export function ProposalReviewPanel({ projectId, proposalId, api = defaultPropos
       {proposalFile ? <div className="proposal-editor"><div className="proposal-editor__heading"><div><span className="eyebrow">Proposal file, not canonical</span><h4>{proposalFile.path}</h4></div><button type="button" className="button-quiet" onClick={() => setProposalFile(undefined)}>Close editor</button></div><textarea aria-label={`Edit isolated proposal file ${proposalFile.path}`} value={draft} onChange={(event) => setDraft(event.target.value)} rows={16} spellCheck={false} /><div className="proposal-editor__actions"><span>{draft === proposalFile.content ? "No unsaved proposal edits" : "Unsaved proposal edit"}</span><button type="button" disabled={Boolean(busy) || draft === proposalFile.content} onClick={() => void saveEdit()}>Save to isolated proposal</button></div></div> : null}
 
       <div className="decision-panel">
-        <div><span className="eyebrow">Whole-run decision</span><h4>This decision applies to all {fileCount} changed {fileCount === 1 ? "file" : "files"}.</h4><p>Partial acceptance is intentionally unavailable.</p></div>
-        {pending ? <div className="decision-panel__actions"><button type="button" disabled={Boolean(busy)} onClick={() => setConfirmDecision("keep")}>Keep whole run</button><button type="button" className="button-danger" disabled={Boolean(busy)} onClick={() => setConfirmDecision("reject")}>Reject whole run</button></div> : <p className="decision-outcome">Decision persisted: <strong>{review.proposal.status}</strong>.</p>}
+        <div><span className="eyebrow">Whole-run decision</span><h4>This decision applies to all {fileCount} changed {fileCount === 1 ? "file" : "files"}.</h4><p>Partial acceptance is intentionally unavailable.</p>{pending && restoredFromRestart ? <p data-testid="proposal-pending-restored" role="status">This proposal was restored as pending. Choose Keep or Reject explicitly; restart did not apply a decision.</p> : null}</div>
+        {pending ? <div className="decision-panel__actions"><button type="button" disabled={Boolean(busy) || keepDisabled} title={keepDisabled ? keepDisabledReason : undefined} onClick={() => setConfirmDecision("keep")}>Keep whole run</button><button type="button" className="button-danger" disabled={Boolean(busy)} onClick={() => setConfirmDecision("reject")}>Reject whole run</button></div> : <p className="decision-outcome">Decision persisted: <strong>{review.proposal.status}</strong>.</p>}
+        {pending && keepDisabledReason ? <p className="decision-panel__constraint" role="status">{keepDisabledReason}</p> : null}
       </div>
 
       {confirmDecision ? <div className="confirmation-panel" role="alertdialog" aria-labelledby="proposal-confirm-title"><h4 id="proposal-confirm-title">Confirm {confirmDecision === "keep" ? "keeping" : "rejection"} of the whole run</h4><p>{confirmDecision === "keep" ? "Margin will apply every proposed change only if canonical files still match the checkpoint. A conflict leaves canonical files untouched." : "Margin will discard the entire isolated proposal. Canonical files remain unchanged."}</p><div><button type="button" disabled={Boolean(busy)} onClick={() => void decide(confirmDecision)}>Confirm {confirmDecision === "keep" ? "keep whole run" : "reject whole run"}</button><button type="button" className="button-quiet" disabled={Boolean(busy)} onClick={() => setConfirmDecision(undefined)}>Cancel</button></div></div> : null}

@@ -1,0 +1,173 @@
+- main:
+  - text: Local-first workspace
+  - heading "Margin" [level=1]
+  - status: Working in S05 Browser UAT
+  - paragraph: Open a folder, keep its files canonical, and review every proposed change before it reaches the project.
+  - region "Question to cited report":
+    - text: Research studio
+    - heading "Question to cited report" [level=2]
+    - text: Proposals stay isolated until review
+    - paragraph: Confirm a bounded brief, pass the Pi capability gate, and follow a reconnectable Standard run. Captured sources, notes, reports, and manifests are proposed artifacts—not canonical edits.
+    - region "Bound the question before spending a run":
+      - text: Research brief
+      - heading "Bound the question before spending a run" [level=2]
+      - paragraph: The confirmed revision, clarification choices, and output intent are saved with the run. Nothing here edits canonical project files.
+      - text: Research question
+      - textbox "Research question":
+        - /placeholder: What should this research establish?
+      - text: Bounded scope
+      - textbox "Bounded scope":
+        - /placeholder: What is in scope, and what should be left out?
+      - text: Audience (optional)
+      - textbox "Research audience":
+        - /placeholder: Who will use the report?
+      - text: Research recipe
+      - combobox "Research recipe":
+        - option "Quick"
+        - option "Standard" [selected]
+        - option "Deep"
+      - text: Output intent
+      - combobox "Research output intent":
+        - option "Research plus cited report" [selected]
+        - option "Research notes only"
+      - status: Start with a question and bounded scope
+      - button "Save draft"
+      - button "Save and confirm brief"
+    - region "Reconnectable Standard research":
+      - text: Research run
+      - heading "Reconnectable Standard research" [level=2]
+      - paragraph: Run state is read from durable records. The activity timeline reconnects from the last stored sequence after a refresh or dropped connection.
+      - text: Pi profile
+      - combobox "Research Pi profile":
+        - option "Pi" [selected]
+      - button "Start Standard research" [disabled]
+      - button "Cancel run" [disabled]
+      - paragraph: No research run yet. Confirm the brief above to unlock the capability-gated Standard run.
+      - strong: Capability gate
+      - text: "Ready Executable: available RPC: available Checked:"
+      - time: 8/20/2026, 3:14:03 PM
+    - region "Lineage and final checkpoint":
+      - text: Evidence trail
+      - heading "Lineage and final checkpoint" [level=2]
+      - button "Refresh lineage"
+      - paragraph: Traverse confirmed briefs, captured sources, accepted reports, independent QA, feedback, and isolated revision decisions. Selecting a milestone never changes its canonical record.
+      - alert: Lineage could not be loaded.
+      - region "Research lineage":
+        - text: Append-only record
+        - heading "Research lineage" [level=3]
+        - text: "0"
+        - paragraph: No research milestones have been recorded yet.
+      - text: Inspect a milestone
+      - paragraph: Select an entry to see what changed, which checkpoint it belongs to, and the canonical detail reference.
+  - region "S05 Browser UAT workspace":
+    - link "Skip to workspace content":
+      - /url: "#workspace-main"
+    - text: Workspace
+    - heading "S05 Browser UAT" [level=2]
+    - text: Full editing
+    - status: Ready
+    - navigation "Workspace panes":
+      - tablist "Workspace panes":
+        - tab "Documents"
+        - tab "Editor" [selected]
+        - tab "Comments"
+        - tab "Runs"
+        - tab "History"
+    - region "Documents":
+      - heading "Documents" [level=2]
+      - strong: Documents
+      - text: "2"
+      - list "Project documents":
+        - listitem: documents/report.md
+        - listitem: sources/manifest.yaml
+    - region "Document editor":
+      - heading "Document editor" [level=2]
+      - text: documents/report.md Saved
+      - button "Visual" [pressed]
+      - button "Source"
+      - button "Comment selection" [disabled]
+      - button "Reload file"
+      - button "Save" [disabled]
+      - text: Visual editor
+      - paragraph: S05 Browser UAT
+      - paragraph
+      - paragraph
+      - textbox "Visual Markdown editor": "# S05 Browser UAT"
+      - paragraph: Ready
+    - region "Comments":
+      - heading "Comments" [level=2]
+      - complementary "Comment review":
+        - text: Review layer
+        - heading "Comments" [level=2]
+        - text: "0"
+        - button "Refresh comments": Refresh
+        - paragraph: Feedback is stored beside the file. It never becomes Markdown text.
+        - region "Add feedback":
+          - heading "Add feedback" [level=3]
+          - group "Comment scope":
+            - button "Selection"
+            - button "Whole document" [pressed]
+            - button "Run guidance"
+          - text: Comment
+          - textbox "New comment":
+            - /placeholder: Leave feedback…
+          - button "Add document comment"
+        - group "Comment filters":
+          - button "All" [pressed]
+          - button "Open"
+          - button "Orphaned"
+        - status: No comments yet
+        - paragraph: Only a user can resolve feedback; automated actors cannot close comments.
+        - listbox "Review comments":
+          - paragraph: No comments match this view.
+    - region "Source capture and provenance":
+      - region "Capture a source":
+        - text: Shared provenance
+        - heading "Capture a source" [level=3]
+        - text: 0 records
+        - paragraph: UI and Pi requests use the same idempotent capture boundary. Evidence stays server-owned; this panel shows bounded provenance only.
+        - text: Source kind
+        - combobox "Source kind":
+          - option "Public URL" [selected]
+          - option "Local file"
+        - text: Public http(s) URL
+        - textbox "Public http(s) URL":
+          - /placeholder: https://example.org/article
+        - button "Capture source"
+        - button "Refresh status"
+        - status: 0 captured sources
+        - heading "Captured sources" [level=4]
+        - paragraph: No source records yet. Capture a URL or a project-local file to preserve an exact evidence version.
+      - region "Choose a captured source":
+        - text: Source detail
+        - heading "Choose a captured source" [level=3]
+        - paragraph: Select a source record to inspect its state, attempts, and exact evidence versions.
+    - region "Runs and proposal review":
+      - heading "Runs and proposal review" [level=2]
+      - region "Revision runs":
+        - text: Isolated proposal
+        - heading "Revision runs" [level=2]
+        - paragraph: Pi works from a checkpoint worktree. Changed paths become a proposal; canonical files are never changed by this control.
+        - text: Pi profile
+        - combobox "Pi profile":
+          - option "Pi" [selected]
+        - status: Profile ready
+        - group "Feedback to include":
+          - text: Feedback to include
+          - paragraph: No open comments are available. Add feedback beside a document first.
+        - text: Instruction review
+        - textbox "Revision guidance":
+          - /placeholder: Optional guidance for this proposal…
+        - text: 0 comments selected
+        - status: Review the selected feedback before starting a proposal
+        - button "Start proposal"
+    - region "Checkpoint history":
+      - heading "Checkpoint history" [level=2]
+      - text: Recovery
+      - heading "Checkpoint history" [level=3]
+      - text: 0 loaded
+      - paragraph:
+        - strong: Restore creates a new recovery checkpoint.
+        - text: Never rewrites checkpoint history. Restore requires confirmation after a diff preview.
+      - alert: Margin could not reach checkpoint history. No restore was attempted; reconnect and retry.
+      - paragraph: No checkpoints have been recorded for this project.

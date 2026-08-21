@@ -1,0 +1,798 @@
+/**
+ * Regression coverage for the model-policy dispatch bugs (#4959, #4681, #4850).
+ *
+ * The five tests here pin the four fix layers documented in the RCA on #4959:
+ *
+ *   1. Vacuous-truth guard: with an empty unit-required tool subset and an
+ *      otherwise-permitted model, dispatch must succeed.  Without this test,
+ *      an over-aggressive Change 1 (e.g. always denying) would still pass any
+ *      "no longer throws" assertion trivially.
+ *   2. Cross-unit poisoning: per-unit narrowing at the bottom of
+ *      `selectAndApplyModel` must NOT bleed into the next unit's policy
+ *      evaluation.  The baseline-restore path (Change 2) must restore the
+ *      pre-dispatch active-tool set before policy runs.
+ *   3. Genuinely-impossible negative: when the workflow REQUIRES a tool no
+ *      candidate model can carry, dispatch must throw
+ *      `ModelPolicyDispatchBlockedError` — proving Change 1 didn't accidentally
+ *      remove gating, and Change 3 wired the typed error.
+ *   4. Restore happened: assert call ordering on a recording fake — the
+ *      baseline `setActiveTools` call must precede the next `selectAndApplyModel`
+ *      reading the active set.
+ *   5. Error message carries reason: the throw must include the per-model
+ *      `tool policy denied (...)` reason fragment from `applyModelPolicyFilter`,
+ *      so users can act on the failure without digging through audit events.
+ */
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+import {
+  selectAndApplyModel,
+  ModelPolicyDispatchBlockedError,
+  clearToolBaseline,
+  getRegisteredToolSnapshot,
+  getToolBaselineSnapshot,
+} from "../auto-model-selection.js";
+import { applyModelPolicyFilter } from "../uok/model-policy.js";
+import {
+  registerToolCompatibility,
+  resetToolCompatibilityRegistry,
+} from "@gsd/pi-coding-agent";
+
+function makeTempProject(): { dir: string; cleanup: () => void; restoreEnv: () => void } {
+  const originalCwd = process.cwd();
+  const originalGsdHome = process.env.GSD_HOME;
+  const dir = mkdtempSync(join(tmpdir(), "gsd-policy-poison-"));
+  const home = mkdtempSync(join(tmpdir(), "gsd-policy-home-"));
+  mkdirSync(join(dir, ".gsd"), { recursive: true });
+  // Empty PREFERENCES so default uok.model_policy.enabled = true applies.
+  writeFileSync(join(dir, ".gsd", "PREFERENCES.md"), "---\n---\n", "utf-8");
+  process.env.GSD_HOME = home;
+  process.chdir(dir);
+  return {
+    dir,
+    cleanup: () => {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    },
+    restoreEnv: () => {
+      process.chdir(originalCwd);
+      if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+      else process.env.GSD_HOME = originalGsdHome;
+    },
+  };
+}
+
+interface RecordingPi {
+  setModel: (m: { provider: string; id: string }) => Promise<boolean>;
+  emitBeforeModelSelect: () => Promise<undefined>;
+  getActiveTools: () => string[];
+  emitAdjustToolSet: () => Promise<undefined>;
+  setActiveTools: (names: string[]) => void;
+  setThinkingLevel: () => void;
+  __calls: Array<{ kind: string; payload: unknown }>;
+  __activeTools: string[];
+}
+
+function makeRecordingPi(initialActiveTools: string[]): RecordingPi {
+  const calls: Array<{ kind: string; payload: unknown }> = [];
+  let active = [...initialActiveTools];
+  return {
+    __calls: calls,
+    get __activeTools() { return active; },
+    setModel: async (m) => {
+      calls.push({ kind: "setModel", payload: `${m.provider}/${m.id}` });
+      return true;
+    },
+    emitBeforeModelSelect: async () => {
+      calls.push({ kind: "emitBeforeModelSelect", payload: null });
+      return undefined;
+    },
+    getActiveTools: () => {
+      calls.push({ kind: "getActiveTools", payload: [...active] });
+      return [...active];
+    },
+    emitAdjustToolSet: async () => {
+      calls.push({ kind: "emitAdjustToolSet", payload: null });
+      return undefined;
+    },
+    setActiveTools: (names) => {
+      active = [...names];
+      calls.push({ kind: "setActiveTools", payload: [...names] });
+    },
+    setThinkingLevel: () => {},
+  } as RecordingPi;
+}
+
+function makeCtx(
+  availableModels: Array<{ id: string; provider: string; api: string }>,
+  sessionModel?: { id: string; provider: string; api: string },
+) {
+  const session = sessionModel ?? availableModels[0];
+  const allModels = [...availableModels];
+  if (session && !allModels.some((m) => m.provider === session.provider && m.id === session.id)) {
+    allModels.push(session);
+  }
+  return {
+    modelRegistry: {
+      getAvailable: () => availableModels,
+      getAll: () => allModels,
+      isProviderRequestReady: () => true,
+      getProviderAuthMode: () => "apiKey",
+    },
+    sessionManager: { getSessionId: () => "test-session" },
+    ui: { notify: () => {} },
+    model: session
+      ? { provider: session.provider, id: session.id, api: session.api }
+      : undefined,
+  } as any;
+}
+
+// ─── 1. Vacuous-truth guard ──────────────────────────────────────────────────
+//
+// Two scenarios pin the empty-requiredTools branch and a permitted-tool branch.
+// Without the empty-list scenario, a regression that mishandles `requiredTools = []`
+// (e.g. by treating an empty array as "deny all" or by null-derefing the helper
+// return) would still pass.
+
+test("vacuous-truth (a): unit type with empty workflow-required tools → dispatch succeeds", async () => {
+  const env = makeTempProject();
+  try {
+    // `rewrite-docs` has no required workflow tools
+    // → returns []. Exercises the empty-requiredTools branch in
+    // applyModelPolicyFilter (existing test used
+    // gate-evaluate which has non-empty required tools and never hit this path).
+    //
+    // PREFERENCES with tier_models is required so resolvePreferredModelConfig
+    // returns a non-undefined modelConfig — only then does selectAndApplyModel
+    // run the policy filter we want to exercise.
+    writeFileSync(
+      join(env.dir, ".gsd", "PREFERENCES.md"),
+      ["---", "dynamic_routing:", "  enabled: true", "  tier_models:", "    heavy: anthropic/claude-sonnet-4-6", "---"].join("\n"),
+      "utf-8",
+    );
+    const availableModels = [
+      { id: "claude-sonnet-4-6", provider: "anthropic", api: "anthropic-messages" },
+    ];
+    const pi = makeRecordingPi([]);
+    clearToolBaseline(pi as unknown as object);
+
+    const result = await selectAndApplyModel(
+      makeCtx(availableModels),
+      pi as any,
+      "rewrite-docs",
+      "x1",
+      env.dir,
+      undefined,
+      false,
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      undefined,
+      true,
+    );
+
+    assert.equal(result.appliedModel?.id, "claude-sonnet-4-6", "empty requiredTools must not deny dispatch");
+    const setModelCalls = pi.__calls.filter(c => c.kind === "setModel");
+    assert.equal(setModelCalls.length, 1, "setModel should have been called exactly once");
+  } finally {
+    env.restoreEnv();
+    env.cleanup();
+  }
+});
+
+test("vacuous-truth (b): non-empty workflow tool requirement that the model carries → dispatch succeeds", async () => {
+  const env = makeTempProject();
+  try {
+    // gate-evaluate has tool requirement ["gsd_save_gate_result"]; if the
+    // model's API can carry it, policy must still allow dispatch. Counter-test
+    // to (a): proves the path with a non-empty requirement isn't denying
+    // legitimate dispatches.
+    const availableModels = [
+      { id: "claude-sonnet-4-6", provider: "anthropic", api: "anthropic-messages" },
+    ];
+    const pi = makeRecordingPi(["gsd_save_gate_result"]);
+    clearToolBaseline(pi as unknown as object);
+
+    const result = await selectAndApplyModel(
+      makeCtx(availableModels),
+      pi as any,
+      "gate-evaluate",
+      "g1",
+      env.dir,
+      undefined,
+      false,
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      undefined,
+      true,
+    );
+
+    assert.equal(result.appliedModel?.id, "claude-sonnet-4-6", "compat-required dispatch must succeed");
+    const setModelCalls = pi.__calls.filter(c => c.kind === "setModel");
+    assert.equal(setModelCalls.length, 1, "setModel should have been called exactly once");
+  } finally {
+    env.restoreEnv();
+    env.cleanup();
+  }
+});
+
+// ─── 2. Cross-unit poisoning ─────────────────────────────────────────────────
+test("cross-unit poisoning: prior unit narrowing must not deny next unit's eligible model", async () => {
+  const env = makeTempProject();
+  try {
+    // Unit-N runs against an `openai-completions` provider that strips a tool
+    // (e.g. "thinking_partner") via adjustToolSet's hard filter.  Without the
+    // baseline-restore (Change 2), pi.getActiveTools() afterward is missing
+    // that tool, but if we used it as the policy required-set we'd erroneously
+    // deny the next unit.  With Change 1+2, policy uses the workflow-required
+    // subset (NOT the live snapshot), and baseline restoration re-seeds the
+    // active set before the next unit.
+    const availableModels = [
+      { id: "openai-narrow", provider: "openai", api: "openai-completions" },
+      { id: "claude-wide", provider: "anthropic", api: "anthropic-messages" },
+    ];
+    // The baseline contains a synthetic "thinking_partner" that openai-completions
+    // does not support.
+    const pi = makeRecordingPi(["gsd_save_gate_result", "thinking_partner"]);
+    clearToolBaseline(pi as unknown as object);
+
+    // Unit-N: dispatch on openai/openai-narrow.  Soft adjustToolSet will narrow
+    // the active set, simulating production poisoning.
+    await selectAndApplyModel(
+      makeCtx(availableModels),
+      pi as any,
+      "gate-evaluate",
+      "n",
+      env.dir,
+      undefined,
+      false,
+      { provider: "openai", id: "openai-narrow" },
+      undefined,
+      true,
+    );
+
+    const setModelCallsAfterUnitN = pi.__calls.filter(c => c.kind === "setModel").length;
+    assert.ok(setModelCallsAfterUnitN >= 1, "unit-N should have dispatched");
+
+    // Unit-N+1: now dispatch with claude-wide.  If active-tool snapshot were
+    // still the policy required-set, the previous narrowing wouldn't matter
+    // (anthropic-messages can carry both tools), so we instead simulate the
+    // 4959 path: a second unit whose workflow requires "gsd_save_gate_result"
+    // (small) — must succeed reaching pi.setModel for claude-wide.
+    const beforeCount = pi.__calls.filter(c => c.kind === "setModel").length;
+    await selectAndApplyModel(
+      makeCtx(availableModels),
+      pi as any,
+      "gate-evaluate",
+      "n+1",
+      env.dir,
+      undefined,
+      false,
+      { provider: "anthropic", id: "claude-wide" },
+      undefined,
+      true,
+    );
+    const afterCount = pi.__calls.filter(c => c.kind === "setModel").length;
+    assert.ok(afterCount > beforeCount, "unit-N+1 should reach pi.setModel — cross-unit narrowing must not block dispatch");
+  } finally {
+    env.restoreEnv();
+    env.cleanup();
+  }
+});
+
+// ─── 3a. Genuinely-impossible: tool-compatibility denial path ────────────────
+//
+// Workflow MCP tools (gsd_*) are excluded from the pi tool-compat gate in
+// selectAndApplyModel; this pins the underlying filter so deny reasons stay
+// actionable when a pi-native required tool is incompatible with the API.
+test("genuinely-impossible (a): pi-native required tool incompatible with candidate API → deny reason names tool + api", async () => {
+  registerToolCompatibility("gsd_save_gate_result", { producesImages: true });
+  try {
+    const candidates = [{ id: "ollama-llama-3", provider: "ollama", api: "ollama-chat" }];
+    const { eligible, decisions } = applyModelPolicyFilter(candidates, {
+      basePath: "/tmp",
+      traceId: "test-trace",
+      requiredTools: ["gsd_save_gate_result"],
+    });
+
+    assert.equal(eligible.length, 0);
+    assert.equal(decisions.length, 1);
+    assert.match(decisions[0]!.reason, /tool policy denied/);
+    assert.match(decisions[0]!.reason, /gsd_save_gate_result/);
+    assert.match(decisions[0]!.reason, /ollama-chat/);
+  } finally {
+    resetToolCompatibilityRegistry();
+  }
+});
+
+// ─── 3b. Genuinely-impossible: cross-provider denial path ────────────────────
+test("genuinely-impossible (b): cross-provider routing disabled + provider mismatch → typed error", async () => {
+  const env = makeTempProject();
+  try {
+    // Use plan-slice but pretend no candidate model can carry its required
+    // workflow tools. The simplest way: provide a model whose
+    // api is a fictitious "no-tools" string — `filterToolsForProvider` returns
+    // every tool as filtered for an unknown api with toolCalling=false, OR we
+    // can pick a real api that also denies the tool.  We use an api that
+    // exists but has known incompatibility — no such case is portable, so we
+    // fall back to a model whose api is recognized to deny `gsd_plan_slice`.
+    //
+    // Pragmatic approach: monkey the policy via `allowCrossProvider=false` +
+    // a single candidate model on a *different* provider than current, which
+    // makes EVERY candidate denied for cross-provider-routing reasons.  This
+    // exercises the same throw path with a deterministic deny reason.
+    const availableModels = [
+      { id: "other-model", provider: "other-provider", api: "anthropic-messages" },
+    ];
+    const pi = makeRecordingPi([]);
+    clearToolBaseline(pi as unknown as object);
+
+    const ctx = makeCtx(availableModels);
+    // currentProvider mismatches → cross-provider denial when disabled.
+    ctx.model = { provider: "anthropic", id: "claude-sonnet-4-6", api: "anthropic-messages" };
+
+    // Set dynamic_routing.cross_provider=false via PREFERENCES so the policy
+    // disables cross-provider routing.
+    // burn-max prevents the D046 balanced profile from injecting canonical
+    // anthropic models — without it, source:"explicit" forces allowCrossProvider=true
+    // and the cross-provider guard is bypassed before the test can exercise it.
+    writeFileSync(
+      join(env.dir, ".gsd", "PREFERENCES.md"),
+      ["---", "token_profile: burn-max", "dynamic_routing:", "  enabled: true", "  cross_provider: false", "  tier_models:", "    heavy: other-provider/other-model", "---"].join("\n"),
+      "utf-8",
+    );
+
+    let thrown: unknown;
+    try {
+      await selectAndApplyModel(
+        ctx,
+        pi as any,
+        "plan-slice",
+        "s1",
+        env.dir,
+        undefined,
+        false,
+        { provider: "anthropic", id: "claude-sonnet-4-6" },
+        undefined,
+        true,
+      );
+    } catch (e) {
+      thrown = e;
+    }
+
+    assert.ok(thrown instanceof ModelPolicyDispatchBlockedError, "should throw ModelPolicyDispatchBlockedError");
+    const err = thrown as ModelPolicyDispatchBlockedError;
+    assert.equal(err.unitType, "plan-slice");
+    assert.equal(err.unitId, "s1");
+    assert.ok(err.reasons.length > 0, "deny reasons should be captured");
+  } finally {
+    env.restoreEnv();
+    env.cleanup();
+  }
+});
+
+// ─── 4. Restore happened ─────────────────────────────────────────────────────
+test("restore baseline: setActiveTools(BASELINE) called between units before next dispatch", async () => {
+  const env = makeTempProject();
+  try {
+    const availableModels = [
+      { id: "claude-sonnet-4-6", provider: "anthropic", api: "anthropic-messages" },
+    ];
+    const baselineTools = ["gsd_save_gate_result", "tool_a", "tool_b"];
+    const pi = makeRecordingPi(baselineTools);
+    clearToolBaseline(pi as unknown as object);
+
+    // First call captures the baseline.
+    await selectAndApplyModel(
+      makeCtx(availableModels),
+      pi as any,
+      "gate-evaluate",
+      "u1",
+      env.dir,
+      undefined,
+      false,
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      undefined,
+      true,
+    );
+
+    // Simulate a downstream caller narrowing the tool set (post-unit poisoning).
+    pi.setActiveTools(["gsd_save_gate_result"]);
+    const callsBeforeU2 = pi.__calls.length;
+
+    // Second call should restore the baseline before reading anything.
+    await selectAndApplyModel(
+      makeCtx(availableModels),
+      pi as any,
+      "gate-evaluate",
+      "u2",
+      env.dir,
+      undefined,
+      false,
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      undefined,
+      true,
+    );
+
+    const u2Calls = pi.__calls.slice(callsBeforeU2);
+    const restoreCall = u2Calls.find(
+      c => c.kind === "setActiveTools"
+        && Array.isArray(c.payload)
+        && (c.payload as string[]).length === baselineTools.length
+        && baselineTools.every(t => (c.payload as string[]).includes(t)),
+    );
+    assert.ok(restoreCall, "setActiveTools(BASELINE) must be called during u2's selectAndApplyModel before dispatch");
+
+    const restoreIdx = u2Calls.indexOf(restoreCall!);
+    const setModelIdx = u2Calls.findIndex(c => c.kind === "setModel");
+    assert.ok(setModelIdx > restoreIdx, "baseline restore must precede setModel dispatch");
+  } finally {
+    env.restoreEnv();
+    env.cleanup();
+  }
+});
+
+// ─── 5. Error message carries reason ─────────────────────────────────────────
+test("error carries deny reason fragment from applyModelPolicyFilter", async () => {
+  const env = makeTempProject();
+  try {
+    // burn-max: prevents D046 balanced default from injecting source:"explicit"
+    // which would force allowCrossProvider=true and bypass cross-provider denial.
+    writeFileSync(
+      join(env.dir, ".gsd", "PREFERENCES.md"),
+      ["---", "token_profile: burn-max", "dynamic_routing:", "  enabled: true", "  cross_provider: false", "  tier_models:", "    heavy: other-provider/other-model", "---"].join("\n"),
+      "utf-8",
+    );
+
+    const availableModels = [
+      { id: "other-model", provider: "other-provider", api: "anthropic-messages" },
+    ];
+    const pi = makeRecordingPi([]);
+    clearToolBaseline(pi as unknown as object);
+
+    const ctx = makeCtx(availableModels);
+    ctx.model = { provider: "anthropic", id: "claude-sonnet-4-6", api: "anthropic-messages" };
+
+    let thrown: Error | undefined;
+    try {
+      await selectAndApplyModel(
+        ctx,
+        pi as any,
+        "plan-slice",
+        "s1",
+        env.dir,
+        undefined,
+        false,
+        { provider: "anthropic", id: "claude-sonnet-4-6" },
+        undefined,
+        true,
+      );
+    } catch (e) {
+      thrown = e as Error;
+    }
+
+    assert.ok(thrown, "should throw");
+    // The cross-provider denial path produces:
+    //   "cross-provider routing disabled (other-provider != anthropic)"
+    assert.match(
+      thrown!.message,
+      /cross-provider routing disabled/,
+      "thrown error message should include the per-model deny reason",
+    );
+    assert.match(thrown!.message, /other-provider\/other-model/, "should name the rejected model");
+  } finally {
+    env.restoreEnv();
+    env.cleanup();
+  }
+});
+
+// ─── 6. Lifecycle: clearToolBaseline forces recapture (#4959) ─────
+//
+// The WeakMap baseline is keyed per `pi` instance, but auto sessions are NOT
+// 1:1 with `pi` instances — a single `pi` can host multiple `/gsd auto` runs
+// separated by stops, manual tool edits, or extension toggles.  Without
+// `clearToolBaseline(pi)` at session boundaries, the SECOND auto run on the
+// same `pi` would silently restore the FIRST run's snapshot and undo whatever
+// tool changes the user made between sessions.  This test pins the contract
+// that `clearToolBaseline` causes the next dispatch to RECAPTURE from the
+// live active set rather than restoring the prior snapshot.
+test("lifecycle: clearToolBaseline forces recapture; subsequent runs respect intervening tool edits", async () => {
+  const env = makeTempProject();
+  try {
+    const availableModels = [
+      { id: "claude-sonnet-4-6", provider: "anthropic", api: "anthropic-messages" },
+    ];
+    const pi = makeRecordingPi(["A", "B", "C"]);
+    clearToolBaseline(pi as unknown as object);
+
+    // ── Run 1: captures baseline [A, B, C] ──
+    await selectAndApplyModel(
+      makeCtx(availableModels),
+      pi as any,
+      "gate-evaluate",
+      "u1",
+      env.dir,
+      undefined,
+      false,
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      undefined,
+      true,
+    );
+
+    // ── Simulate `/gsd auto` stop + intervening user tool edit ──
+    // (auto.ts calls clearToolBaseline in stopAuto; the user then mutates
+    // tools while auto is paused.)
+    clearToolBaseline(pi as unknown as object);
+    pi.setActiveTools(["A", "B"]); // user removed C between sessions
+
+    // ── Run 2: must capture [A, B] as the NEW baseline, not restore [A, B, C] ──
+    const callsBeforeU2 = pi.__calls.length;
+    await selectAndApplyModel(
+      makeCtx(availableModels),
+      pi as any,
+      "gate-evaluate",
+      "u2",
+      env.dir,
+      undefined,
+      false,
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      undefined,
+      true,
+    );
+    const u2Calls = pi.__calls.slice(callsBeforeU2);
+    // No setActiveTools(["A", "B", "C"]) call should appear during u2 — that
+    // would be the bug (restoring the run-1 snapshot over the user's edit).
+    const staleRestore = u2Calls.find(
+      c => c.kind === "setActiveTools"
+        && Array.isArray(c.payload)
+        && (c.payload as string[]).includes("C"),
+    );
+    assert.equal(
+      staleRestore,
+      undefined,
+      "after clearToolBaseline, run 2 must NOT restore the run-1 snapshot containing tool C",
+    );
+
+    // ── Run 3 (no clear): mutate to [A], expect restore to [A, B] (run-2 baseline) ──
+    pi.setActiveTools(["A"]);
+    const callsBeforeU3 = pi.__calls.length;
+    await selectAndApplyModel(
+      makeCtx(availableModels),
+      pi as any,
+      "gate-evaluate",
+      "u3",
+      env.dir,
+      undefined,
+      false,
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      undefined,
+      true,
+    );
+    const u3Calls = pi.__calls.slice(callsBeforeU3);
+    const restoreToRun2Baseline = u3Calls.find(
+      c => c.kind === "setActiveTools"
+        && Array.isArray(c.payload)
+        && (c.payload as string[]).length === 2
+        && (c.payload as string[]).includes("A")
+        && (c.payload as string[]).includes("B")
+        && !(c.payload as string[]).includes("C"),
+    );
+    assert.ok(
+      restoreToRun2Baseline,
+      "run 3 must restore the run-2 baseline [A, B] — proves the recaptured baseline is in use, not the run-1 snapshot",
+    );
+  } finally {
+    env.restoreEnv();
+    env.cleanup();
+  }
+});
+
+// ─── 7. Cross-mode isolation (#4965) ─────────────────────────────────────────
+//
+// `selectAndApplyModel` is called from two places: auto-mode (`isAutoMode=true`,
+// from auto/phases.ts) and guided-flow (`isAutoMode=false`, from guided-flow.ts).
+// The baseline lifecycle (clearToolBaseline) is owned by startAuto/stopAuto —
+// guided-flow has no equivalent clear hook. If `restoreToolBaseline` ran
+// unconditionally, an interactive guided-flow dispatch on a `pi` that previously
+// hosted an auto session would resurrect the auto-era baseline and silently
+// overwrite any user tool edits made between the auto and guided dispatches.
+// Therefore the restore is gated by `isAutoMode`. Guided-flow has its own
+// narrow/restore discipline via discuss-tool-scoping at guided-flow.ts:587-622.
+
+test("cross-mode (#4965): isAutoMode=false does NOT restore baseline even when one is recorded", async () => {
+  const env = makeTempProject();
+  try {
+    const availableModels = [
+      { id: "claude-sonnet-4-6", provider: "anthropic", api: "anthropic-messages" },
+    ];
+    const baselineTools = ["gsd_save_gate_result", "tool_a", "tool_b"];
+    const pi = makeRecordingPi(baselineTools);
+    clearToolBaseline(pi as unknown as object);
+
+    // ── Step 1: auto-mode call captures baseline [A, B, C] ──
+    await selectAndApplyModel(
+      makeCtx(availableModels),
+      pi as any,
+      "gate-evaluate",
+      "u-auto",
+      env.dir,
+      undefined,
+      false,
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      undefined,
+      /* isAutoMode */ true,
+    );
+
+    // ── Step 2: simulate user tool edit between auto and guided dispatches ──
+    pi.setActiveTools(["only_user_kept_tool"]);
+    const callsBeforeGuided = pi.__calls.length;
+
+    // ── Step 3: guided-flow dispatch (isAutoMode=false) ──
+    await selectAndApplyModel(
+      makeCtx(availableModels),
+      pi as any,
+      "gate-evaluate",
+      "u-guided",
+      env.dir,
+      undefined,
+      false,
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      undefined,
+      /* isAutoMode */ false,
+    );
+
+    const guidedCalls = pi.__calls.slice(callsBeforeGuided);
+    // The bug we're guarding against: a setActiveTools call during the guided
+    // dispatch that contains the auto-era baseline tools (which would mean the
+    // auto-captured baseline resurrected and overwrote the user's edit).
+    const baselineRestore = guidedCalls.find(
+      c => c.kind === "setActiveTools"
+        && Array.isArray(c.payload)
+        && baselineTools.every(t => (c.payload as string[]).includes(t)),
+    );
+    assert.equal(
+      baselineRestore,
+      undefined,
+      "guided-flow dispatch (isAutoMode=false) must NOT restore the auto-mode baseline",
+    );
+  } finally {
+    env.restoreEnv();
+    env.cleanup();
+  }
+});
+
+test("cross-mode (#4965): auto → guided → auto preserves the original auto-era baseline for the second auto run", async () => {
+  const env = makeTempProject();
+  try {
+    const availableModels = [
+      { id: "claude-sonnet-4-6", provider: "anthropic", api: "anthropic-messages" },
+    ];
+    const baselineTools = ["gsd_save_gate_result", "tool_a", "tool_b"];
+    const pi = makeRecordingPi(baselineTools);
+    clearToolBaseline(pi as unknown as object);
+
+    // Auto run 1 — captures baseline.
+    await selectAndApplyModel(
+      makeCtx(availableModels), pi as any, "gate-evaluate", "u1",
+      env.dir, undefined, false,
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      undefined, /* isAutoMode */ true,
+    );
+
+    // Guided dispatch in between — must not corrupt the baseline.
+    pi.setActiveTools(["narrow_for_guided"]);
+    await selectAndApplyModel(
+      makeCtx(availableModels), pi as any, "gate-evaluate", "u-guided",
+      env.dir, undefined, false,
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      undefined, /* isAutoMode */ false,
+    );
+
+    // Now narrow further (simulating any post-guided state) and run auto u2.
+    pi.setActiveTools(["something_completely_different"]);
+    const callsBeforeU2 = pi.__calls.length;
+
+    // Auto run 2 — must restore the ORIGINAL auto-era baseline, not the
+    // intervening narrow-for-guided state.
+    await selectAndApplyModel(
+      makeCtx(availableModels), pi as any, "gate-evaluate", "u2",
+      env.dir, undefined, false,
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      undefined, /* isAutoMode */ true,
+    );
+
+    const u2Calls = pi.__calls.slice(callsBeforeU2);
+    const restoreCall = u2Calls.find(
+      c => c.kind === "setActiveTools"
+        && Array.isArray(c.payload)
+        && (c.payload as string[]).length === baselineTools.length
+        && baselineTools.every(t => (c.payload as string[]).includes(t)),
+    );
+    assert.ok(
+      restoreCall,
+      "auto run 2 must restore the auto-era baseline [A, B, C] — proves guided-flow didn't corrupt it",
+    );
+  } finally {
+    env.restoreEnv();
+    env.cleanup();
+  }
+});
+
+// ─── 8. Baseline union: MCP tools connected after baseline capture (#477) ─────
+//
+// `getToolBaselineSnapshot` must return the UNION of the frozen WeakMap baseline
+// and the current live tool set.  This ensures:
+//   (a) Provider-narrowed tools (in baseline, dropped from live) are still seen
+//       by transport preflight — the bug-5 fix from #477.
+//   (b) Tools connected after the baseline was captured (e.g. MCP server attached
+//       mid-session) are also visible — so a paused run that resumes after MCP
+//       reconnects clears the transport warning on the first iteration instead of
+//       repeating it indefinitely.
+
+test("baseline union (#477): getToolBaselineSnapshot includes live tools not present in frozen baseline", async () => {
+  const env = makeTempProject();
+  try {
+    const availableModels = [
+      { id: "claude-sonnet-4-6", provider: "anthropic", api: "anthropic-messages" },
+    ];
+
+    const initialTools = ["bash", "read", "write"];
+    const pi = makeRecordingPi(initialTools);
+    clearToolBaseline(pi as unknown as object);
+
+    // Capture baseline with only native tools (no MCP connected yet).
+    await selectAndApplyModel(
+      makeCtx(availableModels),
+      pi as any,
+      "execute-task",
+      "u1",
+      env.dir,
+      undefined,
+      false,
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      undefined,
+      /* isAutoMode */ true,
+    );
+
+    // Simulate: provider narrows tools (Groq cap, hook override, etc.).
+    // The baseline in the WeakMap still has the full initial set.
+    pi.setActiveTools(["bash"]);
+
+    // Simulate: user connects MCP mid-session (after the baseline was captured).
+    const liveTools = pi.getActiveTools().concat(["mcp__gsd-workflow__gsd_uat_exec"]);
+    pi.setActiveTools(liveTools);
+
+    const snapshot = getToolBaselineSnapshot(pi as any);
+
+    // All baseline tools must be present (even the provider-narrowed ones).
+    for (const t of initialTools) {
+      assert.ok(snapshot.includes(t), `snapshot must include baseline tool: ${t}`);
+    }
+    // Newly connected MCP tool must also be present.
+    assert.ok(
+      snapshot.includes("mcp__gsd-workflow__gsd_uat_exec"),
+      "snapshot must include MCP tool connected after baseline capture",
+    );
+  } finally {
+    env.restoreEnv();
+    env.cleanup();
+  }
+});
+
+test("registered tool snapshot includes tools hidden from the active surface", () => {
+  const pi = {
+    getActiveTools: () => ["read"],
+    getAllTools: () => [
+      { name: "read" },
+      { name: "browser_navigate" },
+      { name: "mcp__gsd-browser__*" },
+    ],
+  };
+
+  assert.deepEqual(getRegisteredToolSnapshot(pi as any), [
+    "read",
+    "browser_navigate",
+    "mcp__gsd-browser__*",
+  ]);
+});

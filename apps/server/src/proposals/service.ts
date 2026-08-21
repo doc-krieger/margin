@@ -19,9 +19,11 @@ import {
 
 export type ProposalCleanup = () => Promise<void>;
 export type ProposalClock = () => Date;
+export type ProposalDecisionObserver = (record: ProposalRecord) => Promise<void>;
 
 export interface ProposalSource extends ProposalCheckpoint {
   cleanup?: ProposalCleanup;
+  ignoredPaths?: string[];
 }
 
 export interface CreateProposalInput {
@@ -33,6 +35,8 @@ export interface CreateProposalInput {
   checkpointRef?: string;
   worktreePath?: string;
   cleanup?: ProposalCleanup;
+  ignoredPaths?: string[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface EditProposalFileInput {
@@ -117,6 +121,7 @@ function sourceFromInput(input: CreateProposalInput): { source: ProposalSource; 
     sha: input.checkpointSha ?? checkpoint?.sha ?? checkpoint?.checkpointSha ?? "",
     ref: input.checkpointRef ?? checkpoint?.ref ?? checkpoint?.checkpointRef ?? `refs/margin/checkpoints/${input.runId}`,
     worktreePath: input.worktreePath ?? checkpoint?.worktreePath ?? "",
+    ignoredPaths: input.ignoredPaths ?? checkpoint?.ignoredPaths,
   };
   const cleanup = input.cleanup ?? checkpoint?.cleanup;
   if (!input.runId || !validId(input.runId) || !input.repositoryRoot || !source.sha || !source.worktreePath) {
@@ -131,6 +136,7 @@ function workspace(record: ProposalRecord): GitProposalWorkspaceInput {
     worktreePath: record.checkpoint.worktreePath,
     checkpointSha: record.checkpoint.sha,
     checkpointRef: record.checkpoint.ref,
+    ignoredPaths: record.ignoredPaths,
   };
 }
 
@@ -149,7 +155,8 @@ export class ProposalService {
   private readonly auditStore: ProposalAuditStore;
   private readonly git: GitProposalService;
   private readonly clock: ProposalClock;
-  private onCleanup?: (record: ProposalRecord) => Promise<void>;
+  private readonly cleanupObservers = new Set<(record: ProposalRecord) => Promise<void>>();
+  private readonly decisionObservers = new Set<ProposalDecisionObserver>();
   private readonly cleanupHandlers = new Map<string, ProposalCleanup>();
   private readonly locks = new Map<string, Promise<void>>();
 
@@ -159,11 +166,19 @@ export class ProposalService {
     this.auditStore = options.auditStore ?? new FileProposalAuditStore(path.join(dataDirectory, "audit"));
     this.git = options.gitService ?? new GitProposalService();
     this.clock = options.clock ?? (() => new Date());
-    this.onCleanup = options.onCleanup;
+    if (options.onCleanup) this.cleanupObservers.add(options.onCleanup);
   }
 
-  setCleanupObserver(observer: (record: ProposalRecord) => Promise<void>): void {
-    this.onCleanup = observer;
+  /** Register without replacing existing run/research reconciliation observers. */
+  setCleanupObserver(observer: (record: ProposalRecord) => Promise<void>): () => void {
+    this.cleanupObservers.add(observer);
+    return () => this.cleanupObservers.delete(observer);
+  }
+
+  /** Register without replacing existing research or lineage observers. */
+  setDecisionObserver(observer: ProposalDecisionObserver): () => void {
+    this.decisionObservers.add(observer);
+    return () => this.decisionObservers.delete(observer);
   }
 
   async create(input: CreateProposalInput): Promise<ProposalRecord> {
@@ -176,6 +191,7 @@ export class ProposalService {
       worktreePath: source.worktreePath,
       checkpointSha: source.sha,
       checkpointRef: source.ref,
+      ignoredPaths: source.ignoredPaths,
     });
     const timestamp = now(this.clock);
     const record: ProposalRecord = {
@@ -192,6 +208,8 @@ export class ProposalService {
       decidedAt: null,
       errorCode: null,
       diagnostics: null,
+      ...(input.ignoredPaths?.length ? { ignoredPaths: [...input.ignoredPaths] } : {}),
+      ...(input.metadata ? { metadata: { ...input.metadata } } : {}),
     };
     await this.proposalStore.save(record);
     if (cleanup) this.cleanupHandlers.set(proposalId, cleanup);
@@ -205,8 +223,8 @@ export class ProposalService {
   }
 
   /** Adapts the checkpoint embedded in a completed run record into a reviewable proposal. */
-  async createFromRun(input: { runId: string; repositoryRoot: string; checkpoint: ProposalCheckpoint; cleanup?: ProposalCleanup; proposalId?: string }): Promise<ProposalRecord> {
-    return this.create({ ...input, checkpoint: { ...input.checkpoint, cleanup: input.cleanup } });
+  async createFromRun(input: { runId: string; repositoryRoot: string; checkpoint: ProposalCheckpoint; cleanup?: ProposalCleanup; proposalId?: string; ignoredPaths?: string[]; metadata?: Record<string, unknown> }): Promise<ProposalRecord> {
+    return this.create({ ...input, checkpoint: { ...input.checkpoint, cleanup: input.cleanup }, ignoredPaths: input.ignoredPaths, metadata: input.metadata });
   }
 
   async get(proposalId: string): Promise<ProposalRecord> {
@@ -377,16 +395,20 @@ export class ProposalService {
       await this.recordAudit(current, "cleanup.failed", { diagnostics });
     }
     await this.notifyCleanup(current);
+    await this.notifyDecision(current);
     return current;
   }
 
   private async notifyCleanup(record: ProposalRecord): Promise<void> {
-    try {
-      await this.onCleanup?.(record);
-    } catch {
-      // The proposal decision and workspace cleanup are already durable. A later
-      // cleanup retry replays this observer to reconcile the parent run record.
-    }
+    // Observers reconcile projections only; every observer is isolated so one
+    // unavailable domain cannot prevent the others from seeing a durable result.
+    await Promise.allSettled([...this.cleanupObservers].map(async (observer) => observer(record)));
+  }
+
+  private async notifyDecision(record: ProposalRecord): Promise<void> {
+    // Proposal state and canonical application are already durable. Subscribers
+    // must never be able to turn a Keep/Reject into a failed decision.
+    await Promise.allSettled([...this.decisionObservers].map(async (observer) => observer(record)));
   }
 
   private async recordAudit(record: ProposalRecord, action: ProposalAuditRecord["action"], details: Record<string, unknown>): Promise<void> {

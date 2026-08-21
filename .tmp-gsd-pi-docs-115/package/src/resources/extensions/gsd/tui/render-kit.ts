@@ -1,0 +1,278 @@
+// Project/App: gsd-pi
+// File Purpose: Shared terminal rendering helpers for GSD extension TUI surfaces.
+
+import { style, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@gsd/pi-tui";
+
+export interface ThemeLike {
+  fg(color: string, text: string): string;
+  bold(text: string): string;
+}
+
+export function safeLine(text: string, width: number, ellipsis = "…"): string {
+  if (width <= 0) return "";
+  return truncateToWidth(text, width, ellipsis);
+}
+
+export function padRightVisible(text: string, width: number): string {
+  if (width <= 0) return "";
+  const truncated = safeLine(text, width);
+  const pad = Math.max(0, width - visibleWidth(truncated));
+  return truncated + " ".repeat(pad);
+}
+
+export function rightAlign(left: string, right: string, width: number): string {
+  if (width <= 0) return "";
+  if (!right) return safeLine(left, width);
+  if (!left) return safeLine(" ".repeat(Math.max(0, width - visibleWidth(right))) + right, width);
+  const gap = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
+  return safeLine(left + " ".repeat(gap) + right, width);
+}
+
+export function wrapVisibleText(text: string, width: number): string[] {
+  if (width <= 0) return [text];
+  return wrapTextWithAnsi(text, width).map((line) =>
+    visibleWidth(line) > width ? truncateToWidth(line, width, "…") : line,
+  );
+}
+
+export function renderBar(theme: ThemeLike, width: number, color = "muted"): string {
+  return safeLine(theme.fg(color, "─".repeat(Math.max(0, width))), width, "");
+}
+
+export function renderKeyHints(theme: ThemeLike, hints: string[], width: number): string {
+  return safeLine(theme.fg("dim", hints.filter(Boolean).join("  │  ")), width);
+}
+
+export function renderProgressBar(
+  theme: ThemeLike,
+  done: number,
+  total: number,
+  width: number,
+  options: {
+    filledColor?: string;
+    emptyColor?: string;
+    filledChar?: string;
+    emptyChar?: string;
+  } = {},
+): string {
+  const barWidth = Math.max(0, width);
+  const pct = total > 0 ? Math.max(0, Math.min(1, done / total)) : 0;
+  const filled = Math.round(pct * barWidth);
+  const filledChar = options.filledChar ?? "█";
+  const emptyChar = options.emptyChar ?? "░";
+  return (
+    theme.fg(options.filledColor ?? "success", filledChar.repeat(filled)) +
+    theme.fg(options.emptyColor ?? "dim", emptyChar.repeat(barWidth - filled))
+  );
+}
+
+export function statusGlyph(
+  theme: ThemeLike,
+  level: "active" | "idle" | "warning" | "error" | "success",
+): string {
+  switch (level) {
+    case "active": return theme.fg("success", "●");
+    case "success": return theme.fg("success", "✓");
+    case "warning": return theme.fg("warning", "!");
+    case "error": return theme.fg("error", "x");
+    case "idle":
+    default: return theme.fg("dim", "○");
+  }
+}
+
+/**
+ * Render a titled panel without vertical borders.
+ *
+ * Unlike {@link renderFrame}, this draws no `│` side bars — only a header rule
+ * with an inline title and a closing rule. Body lines are indented. Because no
+ * box-drawing character ever sits on a content line, terminal text selection
+ * copies clean text. Use this for inline output users may copy; keep
+ * {@link renderFrame} for transient overlays that benefit from a full box.
+ *
+ *   ── Title ────────────────────────────────
+ *
+ *     body line
+ *     body line
+ *   ──────────────────────────────────────────
+ */
+export function renderPanel(
+  theme: ThemeLike,
+  title: string,
+  inner: string[],
+  width: number,
+  options: { ruleColor?: string; indent?: number } = {},
+): string[] {
+  if (width < 4) {
+    return [safeLine(title, width), ...inner.map((line) => safeLine(line, width))];
+  }
+
+  const ruleColor = options.ruleColor ?? "borderAccent";
+  const paddingX = Math.max(0, options.indent ?? 0);
+  const surface = style()
+    .border("open")
+    .title(title, (text) => theme.fg(ruleColor, text))
+    .borderColor((text) => theme.fg(ruleColor, text))
+    .paddingX(paddingX)
+    .bottomRule(true);
+
+  const body = inner.length > 0 ? inner : [""];
+  return surface.render(body, width);
+}
+
+export interface PlainOutcomeLayoutOptions {
+  /** Right side of the header row (e.g. elapsed time). */
+  headerRight?: string;
+  /** Full-width body rows with an optional right column. */
+  splitRows?: Array<{ left: string; right?: string }>;
+  /** Footer hints pinned to the bottom-right (e.g. slash commands). */
+  footerRight?: string;
+}
+
+/**
+ * Plain transcript outcome — matches the GSD chat/tool speaker line (no rule box).
+ * Header: `GSD · <status>` with optional right meta; body copy-clean; optional footer right.
+ */
+export function renderPlainOutcome(
+  theme: ThemeLike,
+  width: number,
+  statusLine: string,
+  bodyLines: string[],
+  options?: PlainOutcomeLayoutOptions,
+): string[] {
+  const headerLeft =
+    theme.fg("accent", theme.bold("GSD")) + theme.fg("dim", " · ") + statusLine;
+  const header = options?.headerRight
+    ? rightAlign(headerLeft, options.headerRight, width)
+    : safeLine(headerLeft, width);
+
+  const out: string[] = [header];
+
+  if (options?.splitRows && options.splitRows.length > 0) {
+    for (const row of options.splitRows) {
+      out.push(row.right ? rightAlign(row.left, row.right, width) : safeLine(row.left, width));
+    }
+  } else {
+    for (const line of bodyLines.filter(Boolean)) {
+      out.push(safeLine(line, width));
+    }
+  }
+
+  if (options?.footerRight) {
+    out.push(rightAlign("", options.footerRight, width));
+  }
+
+  if (out.length === 1 && !options?.footerRight) {
+    return [header, ""];
+  }
+  return [...out, ""];
+}
+
+export function renderFrame(
+  theme: ThemeLike,
+  inner: string[],
+  width: number,
+  options: { borderColor?: string; paddingX?: number } = {},
+): string[] {
+  if (width < 4) return inner.map((line) => safeLine(line, width));
+
+  const borderColor = options.borderColor ?? "borderAccent";
+  const paddingX = Math.max(0, options.paddingX ?? 1);
+  const contentWidth = Math.max(0, width - 2 - paddingX * 2);
+  const border = (text: string) => theme.fg(borderColor, text);
+  const pad = " ".repeat(paddingX);
+
+  const lines = [border("╭" + "─".repeat(width - 2) + "╮")];
+  for (const line of inner) {
+    lines.push(
+      border("│") +
+      pad +
+      padRightVisible(line, contentWidth) +
+      pad +
+      border("│"),
+    );
+  }
+  lines.push(border("╰" + "─".repeat(width - 2) + "╯"));
+  return lines.map((line) => safeLine(line, width, ""));
+}
+
+export interface DialogFrameOptions {
+  borderColor?: string;
+  paddingX?: number;
+  footer?: string | string[];
+  scroll?: {
+    offset: number;
+    visibleRows: number;
+    totalRows: number;
+    trackOffset?: number;
+    trackRows?: number;
+  };
+}
+
+function renderTitledTopBorder(
+  theme: ThemeLike,
+  title: string,
+  width: number,
+  border: (text: string) => string,
+): string {
+  const trimmedTitle = title.trim();
+  if (!trimmedTitle || width < 10) {
+    return border("╭" + "─".repeat(width - 2) + "╮");
+  }
+
+  const maxTitleWidth = Math.max(0, width - 7);
+  const safeTitle = safeLine(trimmedTitle, maxTitleWidth);
+  const fill = Math.max(0, width - visibleWidth(safeTitle) - 5);
+  return border("╭─ ") + theme.bold(theme.fg("accent", safeTitle)) + border(" " + "─".repeat(fill) + "╮");
+}
+
+export function renderDialogFrame(
+  theme: ThemeLike,
+  title: string,
+  inner: string[],
+  width: number,
+  options: DialogFrameOptions = {},
+): string[] {
+  if (width < 4) return inner.map((line) => safeLine(line, width));
+
+  const borderColor = options.borderColor ?? "borderAccent";
+  const paddingX = Math.max(0, options.paddingX ?? 1);
+  const contentWidth = Math.max(0, width - 2 - paddingX * 2);
+  const border = (text: string) => theme.fg(borderColor, text);
+  const pad = " ".repeat(paddingX);
+  const lines = [renderTitledTopBorder(theme, title, width, border)];
+
+  const scroll = options.scroll;
+  const bodyRows = inner.length;
+  const trackOffset = Math.max(0, Math.min(scroll?.trackOffset ?? 0, bodyRows));
+  const trackRows = Math.max(0, Math.min(scroll?.trackRows ?? bodyRows, bodyRows - trackOffset));
+  const scrollable = !!scroll && scroll.totalRows > scroll.visibleRows && trackRows > 0;
+  const thumbLen = scrollable
+    ? Math.max(1, Math.round((scroll.visibleRows / scroll.totalRows) * trackRows))
+    : 0;
+  const maxThumbStart = Math.max(0, trackRows - thumbLen);
+  const maxScrollOffset = scrollable ? Math.max(1, scroll.totalRows - scroll.visibleRows) : 1;
+  const thumbStart = scrollable
+    ? trackOffset + Math.min(maxThumbStart, Math.round((scroll.offset / maxScrollOffset) * maxThumbStart))
+    : -1;
+
+  for (let i = 0; i < inner.length; i++) {
+    const line = inner[i] ?? "";
+    const rightBorder = scrollable && i >= thumbStart && i < thumbStart + thumbLen ? "┃" : "│";
+    lines.push(border("│") + pad + padRightVisible(line, contentWidth) + pad + border(rightBorder));
+  }
+
+  const footer = Array.isArray(options.footer)
+    ? options.footer
+    : options.footer
+      ? [options.footer]
+      : [];
+  if (footer.length > 0) {
+    lines.push(border("├" + "─".repeat(width - 2) + "┤"));
+    for (const line of footer) {
+      lines.push(border("│") + pad + padRightVisible(line, contentWidth) + pad + border("│"));
+    }
+  }
+
+  lines.push(border("╰" + "─".repeat(width - 2) + "╯"));
+  return lines.map((line) => safeLine(line, width, ""));
+}

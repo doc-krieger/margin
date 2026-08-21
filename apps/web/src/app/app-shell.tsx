@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { DocumentWorkspace } from "../workspace";
+import { ResearchWorkspace } from "../research";
 import { ProjectPicker } from "../projects/project-picker";
 import { defaultProjectApiClient, type ProjectApiClient, type ProjectView } from "../projects/api";
 
@@ -25,7 +26,10 @@ export function AppShell({ client = defaultProjectApiClient }: AppShellProps) {
       </header>
       <p className="app-intro">Open a folder, keep its files canonical, and review every proposed change before it reaches the project.</p>
       {!project && <ProjectPicker client={client} onProjectOpened={setProject} />}
-      {project && <DocumentWorkspace project={project} client={client} proposalId={proposalId} />}
+      {project && <>
+        <ResearchWorkspace projectId={project.id} />
+        <DocumentWorkspace project={project} client={client} proposalId={proposalId} />
+      </>}
     </main>
   );
 }

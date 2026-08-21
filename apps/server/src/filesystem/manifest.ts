@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { projectIdSchema } from "@margin/shared";
+import { projectIdSchema } from "../../../../packages/shared/src/index.js";
 
 export const PROJECT_MANIFEST_FILENAME = "margin.yaml";
 export const PROJECT_MANIFEST_VERSION = 1;

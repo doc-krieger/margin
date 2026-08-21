@@ -1,0 +1,2 @@
+Fixture plain text for local source capture.
+It remains immutable after archival.

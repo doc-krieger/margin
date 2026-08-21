@@ -51,6 +51,9 @@ let fixtureRoot;
 try {
   await step("editor typecheck", npm, ["run", "typecheck"]);
   await step("editor markdown fidelity", npm, ["test", "--", "tests/editor/markdown-editor.test.ts"]);
+  await step("source capture browser contract", npm, ["run", "test:browser", "--", "tests/browser/sources/source-capture.test.ts"]);
+  await step("report review and whole-proposal browser contract", npm, ["run", "test:browser", "--", "tests/browser/research/report-review.test.ts", "tests/browser/proposals/proposals.test.ts"]);
+  await step("source API routes and evidence projection", npm, ["test", "--", "tests/integration/sources/source-routes.test.ts", "tests/integration/sources/evidence-projection.test.ts"]);
 
   fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "margin-local-acceptance-"));
   await step("Git initialize fixture", git, ["init", "--initial-branch=main"], { cwd: fixtureRoot });
@@ -64,7 +67,24 @@ try {
   results.push({ name: "Git clean checkpoint", status: "passed", exitCode: 0 });
   console.log("[acceptance] Git clean checkpoint ... passed");
 
-  await step("Pi profile preflight", npm, ["run", "preflight:pi"]);
+  const piPreflight = await step("Pi RPC preflight (state and statistics only; no model or web request)", npm, ["run", "--silent", "preflight:pi"]);
+  let piReport;
+  try {
+    piReport = JSON.parse(piPreflight.stdout);
+  } catch (error) {
+    throw new Error(`Pi preflight did not return JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (piReport.status !== "available" || piReport.rpcSmoke?.status !== "available") {
+    throw new Error("Pi preflight did not prove executable and RPC state/statistics availability");
+  }
+  results.push({
+    name: "Pi RPC state/statistics smoke",
+    status: "passed",
+    noModelPrompt: true,
+    noOutwardWebRequest: true,
+    credentialsExposed: false,
+  });
+  console.log("[acceptance] Pi RPC state/statistics smoke ... passed (no model prompt or outward web request)");
 
   const zoteroPath = await commandPath("zotero");
   if (zoteroPath) {
